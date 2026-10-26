@@ -1,9 +1,9 @@
 #!/bin/bash
-# Fetch the exact upstream sources used by the MVP, apply the patches, build arkd:rgb, the arkdb test tool and the demo.
-# Run from the repo root. Paths in demo/src and scripts/ assume the root is /workspace/rgb-arkade
-# (override scripts with R=...; demo/src has the path hardcoded: symlink the repo there or edit it).
+# Fetch the pinned upstream sources, apply patches/, and build the arkd:rgb image, the arkdb test tool
+# and the demo. Idempotent: re-running skips clones and already-applied patches.
+# Usage: scripts/setup.sh   (from anywhere; everything goes under the repo root, or $RGB_ARKADE_DIR)
 set -euo pipefail
-ROOT=$(cd "$(dirname "$0")/.." && pwd); cd "$ROOT"
+ROOT=${RGB_ARKADE_DIR:-$(cd "$(dirname "$0")/.." && pwd)}; cd "$ROOT"
 mkdir -p vendor state logs tools watchtowerd
 
 clone() { # dir url commit patch
@@ -23,10 +23,10 @@ clone arkade-regtest   https://github.com/ArkLabsHQ/arkade-regtest 457b9ef6119be
 ( cd vendor/arkd && CGO_ENABLED=0 go build -o "$ROOT/arkd-image/arkd" ./cmd/arkd )
 docker build -t arkd:rgb arkd-image
 
-# Stage 6 test tool (simulates a colluding operator editing its own DB); built inside the arkd module for its go.sum
+# fraud-scenario test tool (simulates a colluding operator editing its own DB); built inside the arkd module for its go.sum
 mkdir -p vendor/arkd/cmd/arkdb-sim && cp tools/arkdb-sim/main.go vendor/arkd/cmd/arkdb-sim/
 ( cd vendor/arkd && CGO_ENABLED=0 go build -o "$ROOT/tools/arkdb" ./cmd/arkdb-sim )
 
 # demo (toolchain pinned in demo/rust-toolchain.toml)
 ( cd demo && cargo build )
-echo "setup done; start the regtest stack as described in README 'Reproduce from scratch'"
+echo "setup done; next: make regtest-up (see README, Quickstart)"

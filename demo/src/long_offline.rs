@@ -1,4 +1,4 @@
-//! Stage 4 / Workstream A: "user offline for 2 weeks, asset never lost", scaled to regtest time.
+//! Scenarios `long-offline-*`: "user offline for 2 weeks, asset never lost", scaled to regtest time.
 //!
 //! Scale: batch expiry 2048 s stands for 28 days (1 day = 73 s); offline window 1024 s = 14 days.
 //! * alice: no third party. Long expiry + wallet policy "before going offline, refresh if less than
@@ -7,9 +7,9 @@
 //!   fee ladder paid from Erin's own fee UTXOs). Daemon exits V; Erin comes back, pays Gina on-chain.
 //! * frank: registered with watchtowerd B, which is killed before acting (watchtower down) ->
 //!   swept -> asset lost; documents what RGB and the wallet health check report.
-use crate::stage2::{BatchOp, colored_batch, first_vtxo, mine_until, spend_exited, summary_rec};
-use crate::stage3::{branch_of, find_spender};
-use crate::wtd::{FeeKey, Registration, read_status, registration_dir};
+use crate::forfeit::{BatchOp, colored_batch, first_vtxo, mine_until, spend_exited, summary_rec};
+use crate::exit_watchtower::{branch_of, find_spender};
+use crate::watchtowerd::{FeeKey, Registration, read_status, registration_dir};
 use crate::{ISSUE_AMOUNT, ark_client, ark_client_load, bare_opret, bl, board, now, onchain_genesis_jump_in, regtest, rgb_wallet, rgb_wallet_load, step};
 use anyhow::{anyhow, ensure};
 use ark_core::server::GetVtxosRequest;
@@ -33,7 +33,7 @@ const EXIT_SAT: u64 = 20_000;
 const PAY_SAT: u64 = 2_000;
 
 fn wtd_dir(name: &str) -> PathBuf {
-    PathBuf::from("/workspace/rgb-arkade/watchtowerd").join(name)
+    crate::paths::watchtowerd().join(name)
 }
 
 pub(crate) async fn vtxo_info(v: OutPoint) -> Option<ark_core::server::VirtualTxOutPoint> {
@@ -73,7 +73,7 @@ pub async fn setup(dir: PathBuf) -> anyhow::Result<()> {
     let mut rec = summary_rec(dir.join("setup"));
     std::fs::create_dir_all(dir.join("setup"))?;
     let regtest = Arc::new(Regtest::new());
-    step("S4A.1: users board (erin + hank share a batch -> depth-2 branch)");
+    step("1. users board (erin + hank share a batch -> depth-2 branch)");
     let (alice, _) = ark_client("alice", regtest.clone(), &state).await?;
     let (erin, _) = ark_client("erin", regtest.clone(), &state).await?;
     let (hank, _) = ark_client("hank", regtest.clone(), &state).await?;
@@ -299,7 +299,7 @@ pub async fn return_user(who: &str, dir: PathBuf) -> anyhow::Result<()> {
     let regtest = Arc::new(Regtest::new());
     let offline_s = now() as i64 - u["t_offline"].as_i64().unwrap();
     rec("offline_for", format!("{offline_s} s = {:.1} scaled days", offline_s as f64 / DAY_S));
-    step(&format!("S4A: {who} comes back online (new process, wallets reloaded from disk)"));
+    step(&format!("{who} comes back online (new process, wallets reloaded from disk)"));
     let (client, _w) = ark_client_load(who, regtest.clone(), &state).await?;
     let (mut rgb, online) = bl(|| rgb_wallet_load(who, &state))?;
     let health = colored_health(v, &regtest).await;
@@ -368,6 +368,6 @@ pub async fn return_user(who: &str, dir: PathBuf) -> anyhow::Result<()> {
         }
         _ => anyhow::bail!("unknown user {who}"),
     }
-    println!("\nOFFLINE-2W RETURN {who}: PASS");
+    println!("\nLONG-OFFLINE RETURN {who} RESULT: PASS");
     Ok(())
 }

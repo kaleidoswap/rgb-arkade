@@ -5,10 +5,8 @@ use ark_core::ExplorerUtxo;
 use base64::Engine;
 use bitcoin::hex::FromHex;
 use bitcoin::{Address, Amount, OutPoint, Transaction, Txid};
-use std::path::PathBuf;
 use std::process::Command;
 
-pub const REGTEST_DIR: &str = "/workspace/rgb-arkade/arkade-regtest";
 
 pub struct Regtest {
     esplora: esplora_client::BlockingClient,
@@ -54,7 +52,7 @@ impl Regtest {
 
     pub fn tx_confirmations(&self, txid: &Txid) -> Option<u64> {
         let v = self.rpc_opt("getrawtransaction", serde_json::json!([txid.to_string(), true]))?;
-        // mempool txs have no "confirmations" field: they are NOT mined (Stage 3 fix)
+        // mempool txs have no "confirmations" field: they are NOT mined
         v.get("confirmations").and_then(|c| c.as_u64()).filter(|c| *c > 0)
     }
 
@@ -144,9 +142,9 @@ impl Blockchain for Regtest {
 
 fn regtest_cmd(args: &[&str]) -> anyhow::Result<String> {
     let out = Command::new("node")
-        .arg(PathBuf::from(REGTEST_DIR).join("regtest.mjs"))
+        .arg(crate::paths::regtest_dir().join("regtest.mjs"))
         .args(args)
-        .current_dir(REGTEST_DIR)
+        .current_dir(crate::paths::regtest_dir())
         .output()?;
     let s = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     if !out.status.success() {

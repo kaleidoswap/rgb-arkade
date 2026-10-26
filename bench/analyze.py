@@ -1,5 +1,5 @@
 import json,sys,os
-B='/workspace/rgb-arkade/state/bench-stage4'
+B=os.environ.get('BENCH_DIR', os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'state', 'bench'))
 def load(n):
     p=os.path.join(B,n+'.jsonl')
     return [json.loads(l) for l in open(p)] if os.path.exists(p) else []

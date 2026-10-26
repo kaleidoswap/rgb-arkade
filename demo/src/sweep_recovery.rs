@@ -1,14 +1,14 @@
-//! Stage 5: sweep recovery of a colored VTXO.
+//! Scenarios `sweep-recovery-*`: sweep recovery of a colored VTXO.
 //!
 //! A user offline for months: the batch expires and is swept, nobody acted. On return the
 //! swept (recoverable) VTXO V is settled into a new batch like stock Arkade does for BTC, but with
-//! arkd patch 6 the operator requires and co-signs (patch 5) a forfeit for V, so the forfeit
-//! carries the RGB transition V -> V' (new VTXO), exactly like a refresh (Stage 2).
-//! `--stage5-setup <dir>` / `--stage5-return <dir>`; the orchestrator shortens and restores the
+//! the arkd recovery-forfeit change the operator requires and co-signs a forfeit for V, so the forfeit
+//! carries the RGB transition V -> V' (new VTXO), exactly like a refresh.
+//! `scenario sweep-recovery-setup <dir>` / `scenario sweep-recovery-return <dir>`; the orchestrator shortens and restores the
 //! batch expiry and waits for the sweep in between (wallet processes stopped).
-use crate::offline2w::{colored_health, pay_from_rgb_output, receive, vtxo_info};
+use crate::long_offline::{colored_health, pay_from_rgb_output, receive, vtxo_info};
 use crate::proof::{ProofFile, build_proof, import, operators, proof_path};
-use crate::stage2::{BatchOp, colored_batch, first_vtxo, mine_until, summary_rec};
+use crate::forfeit::{BatchOp, colored_batch, first_vtxo, mine_until, summary_rec};
 use crate::{ISSUE_AMOUNT, ark_client, ark_client_load, bl, board, now, onchain_genesis_jump_in, regtest, rgb_wallet, rgb_wallet_load, step};
 use anyhow::{anyhow, ensure};
 use ark_core::intent::{self, IntentMessage, RGB_RECOVERY_FORFEIT};
@@ -16,7 +16,7 @@ use bitcoin::key::Keypair;
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use bitcoin::{Address, Amount, OutPoint, Psbt, ScriptBuf, TxOut, Txid};
 use regtest::Regtest;
-use rgb_lib::wallet::{RgbWalletOpsOffline, RgbWalletOpsOnline};
+use rgb_lib::wallet::RgbWalletOpsOffline;
 use rgb_lib::{Assignment, ContractId, FileContent};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -35,7 +35,7 @@ pub async fn setup(dir: PathBuf) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir.join("setup"))?;
     let mut rec = summary_rec(dir.join("setup"));
     let regtest = Arc::new(Regtest::new());
-    step("S5.1: Alice boards, on-chain genesis + jump-in to V");
+    step("1. Alice boards, on-chain genesis + jump-in to V");
     let (alice, _) = ark_client("alice", regtest.clone(), &state).await?;
     let (_m, _) = ark_client("mallory", regtest.clone(), &state).await?;
     bl(|| rgb_wallet("dave", &state))?;
@@ -48,19 +48,19 @@ pub async fn setup(dir: PathBuf) -> anyhow::Result<()> {
     let (mut w, online) = bl(|| rgb_wallet("alice", &state))?;
     let asset_id = onchain_genesis_jump_in(&regtest, &mut w, &online, v, &state, &mut rec).await?;
     rec("asset_id", asset_id.clone());
-    // Stage 6: track V in rgb-lib (branch from arkd, chain-verified) for the Ark-aware status
+    // track V in rgb-lib (branch from arkd, chain-verified) for the Ark-aware status
     let ops = operators(&alice.server_info().await?);
     let tp = dir.join("setup/track-v.arkproof.json");
     crate::proof::add_vtxos(&alice, &regtest, &tp, &[v]).await?;
     import(&w, &online, &tp, &ops)?;
-    crate::stage6::own(&w, v)?;
+    crate::batch_scenarios::own(&w, v)?;
     let st = bl(|| w.ark_vtxo_status(online.clone(), v.to_string()));
     rec("rgb_lib_ark_status_before_offline", format!("{st:?}"));
     let b = bl(|| w.get_asset_balance_ark(online.clone(), asset_id.clone()));
     rec("rgb_lib_ark_balance_before_offline", format!("{b:?}"));
     let s = serde_json::json!({"state": state.display().to_string(), "vtxo": v.to_string(), "asset_id": asset_id, "expires_at": vi.expires_at, "t_offline": now()});
     std::fs::write(scen(&dir), serde_json::to_string_pretty(&s)?)?;
-    println!("\nSTAGE 5 SETUP DONE: alice goes offline");
+    println!("\nSWEEP RECOVERY SETUP DONE: alice goes offline");
     Ok(())
 }
 
@@ -114,13 +114,13 @@ pub async fn return_user(dir: PathBuf) -> anyhow::Result<()> {
     let regtest = Arc::new(Regtest::new());
     let off = now() as i64 - s["t_offline"].as_i64().unwrap();
     rec("offline_for", format!("{off} s"));
-    step("S5.2: Alice comes back (new process); her colored VTXO was swept");
+    step("2. Alice comes back (new process); her colored VTXO was swept");
     let (alice, _) = ark_client_load("alice", regtest.clone(), &state).await?;
     let (mallory, _) = ark_client_load("mallory", regtest.clone(), &state).await?;
     let (mut rgb, online) = bl(|| rgb_wallet_load("alice", &state))?;
     let health = colored_health(v, &regtest).await;
     rec("health_on_return", health.clone());
-    // Stage 6 item 3: rgb-lib's own status (chain only), not the demo health check
+    // rgb-lib's own status (chain only), not the demo health check
     let st = bl(|| rgb.ark_vtxo_status(online.clone(), v.to_string()));
     rec("rgb_lib_ark_status_on_return", format!("{st:?}"));
     let b6 = bl(|| rgb.get_asset_balance_ark(online.clone(), asset_id.clone())).map_err(|e| anyhow!("{e}"))?;
@@ -133,7 +133,7 @@ pub async fn return_user(dir: PathBuf) -> anyhow::Result<()> {
     let ops = operators(&alice.server_info().await?);
     let amount = vi.amount;
 
-    step("S5.3: NEG non-owner recovery intent (Mallory forges Alice's signature)");
+    step("3. NEG non-owner recovery intent (Mallory forges Alice's signature)");
     RGB_RECOVERY_FORFEIT.store(true, Ordering::SeqCst);
     let inputs = alice.rgb_settleable_inputs(&[v]).await.map_err(|e| anyhow!("settleable: {e:?}"))?;
     rec("v_settleable_as_recoverable", format!("{} input(s), is_swept flag sent: {}", inputs.len(), inputs.first().map(|i| i.is_swept()).unwrap_or(true)));
@@ -144,7 +144,7 @@ pub async fn return_user(dir: PathBuf) -> anyhow::Result<()> {
     rec("neg_non_owner_intent", format!("{:?}", r.as_ref().map_err(|e| format!("{e:?}"))).chars().take(300).collect());
     ensure!(r.is_err(), "forged intent accepted");
 
-    step("S5.4: Alice recovers V into a new batch; the forfeit carries T: V -> V'");
+    step("4. Alice recovers V into a new batch; the forfeit carries T: V -> V'");
     let (addr, _) = alice.get_offchain_address().await?;
     let res = colored_batch("recover", &alice, &rgb, cid, v, ISSUE_AMOUNT, BatchOp::Refresh(addr.clone())).await;
     RGB_RECOVERY_FORFEIT.store(false, Ordering::SeqCst);
@@ -158,7 +158,7 @@ pub async fn return_user(dir: PathBuf) -> anyhow::Result<()> {
     rec("v_indexer_after", format!("swept={} spent={} spent_by={:?} settled_by={:?}", vi2.is_swept, vi2.is_spent, vi2.spent_by, vi2.settled_by));
     rec("new_vtxo_health", colored_health(fc.target, &regtest).await);
 
-    step("S5.5: NEG second recovery intent for the same V (genuinely signed by Alice)");
+    step("5. NEG second recovery intent for the same V (genuinely signed by Alice)");
     RGB_RECOVERY_FORFEIT.store(true, Ordering::SeqCst);
     let t = now();
     let (ck, _) = (Keypair::from_secret_key(&Secp256k1::new(), &SecretKey::new(&mut rand::thread_rng())), 0);
@@ -172,16 +172,16 @@ pub async fn return_user(dir: PathBuf) -> anyhow::Result<()> {
     rec("neg_second_recovery_intent", format!("{r:?}").chars().take(300).collect());
     ensure!(r.is_err(), "second recovery intent accepted");
 
-    step("S5.6: Alice's own proof for the recovery forfeit (from arkd, after the sweep)");
+    step("6. Alice's own proof for the recovery forfeit (from arkd, after the sweep)");
     let own = out.join("recovery_forfeit.rgbc");
     fc.transfer.save_file(&own).map_err(|e| anyhow!("save: {e}"))?;
     let st = build_proof(&alice, &regtest, &[fid], &[], &proof_path(&own)).await?;
-    // Stage 6 item 4: declare the recovery (receivers check the sweep on-chain) and track V'
+    // declare the recovery (receivers check the sweep on-chain) and track V'
     crate::proof::mark_recovery(&proof_path(&own), fid)?;
     crate::proof::add_vtxos(&alice, &regtest, &proof_path(&own), &[fc.target]).await?;
     rec("recovery_proof", format!("{} B, {} PSBTs (+ V' branch), recoveries [{fid}]", st.bytes, st.n_psbts));
     import(&rgb, &online, &proof_path(&own), &ops)?;
-    crate::stage6::own(&rgb, fc.target)?;
+    crate::batch_scenarios::own(&rgb, fc.target)?;
     let _ = bl(|| rgb.update_witnesses(online.clone(), 0, vec![]));
     let bal = bl(|| rgb.get_asset_balance(asset_id.clone()));
     rec("alice_balance_after_recovery", format!("{bal:?}"));
@@ -189,7 +189,7 @@ pub async fn return_user(dir: PathBuf) -> anyhow::Result<()> {
     rec("rgb_lib_ark_balance_after_recovery", format!("active {} to_recover {} in_flight {} vtxos {:?}", b6.active, b6.to_recover, b6.in_flight, b6.vtxos));
     ensure!(b6.active == ISSUE_AMOUNT && b6.to_recover == 0, "rgb-lib balance not restored after recovery");
 
-    step("S5.7: Alice spends: collaborative exit of V' and on-chain payment to Dave");
+    step("7. Alice spends: collaborative exit of V' and on-chain payment to Dave");
     let exit_addr = Address::from_str(&bl(|| rgb.get_address())?)?.assume_checked();
     let (c2, fc2) = colored_batch("exit", &alice, &rgb, cid, fc.target, ISSUE_AMOUNT, BatchOp::Exit(exit_addr, Amount::from_sat(EXIT_SAT))).await?;
     mine_until(&regtest, &c2).await?;
@@ -212,7 +212,7 @@ pub async fn return_user(dir: PathBuf) -> anyhow::Result<()> {
     rec("proof_ad_recoveries_carried", format!("{:?}", pf.recoveries));
     rec("proof_ad", format!("{} B, {} PSBTs, txids {:?}", st.bytes, st.n_psbts, crate::proof::psbt_txids(&proof_path(&cons))?));
 
-    step("S5.8: Dave validates with arkd PAUSED; negatives first");
+    step("8. Dave validates with arkd PAUSED; negatives first");
     let _down = crate::proof::arkd_down(&mut rec, "dave")?;
     let neg = crate::proof::negatives("dave", &dave, &dave_on, &proof_path(&cons), &ops, &mut rec)?;
     ensure!(neg, "a mutated proof was accepted");
@@ -236,6 +236,6 @@ pub async fn return_user(dir: PathBuf) -> anyhow::Result<()> {
     let settled = receive("dave", &mut dave, &dave_on, &cons, &ops, &asset_id, &mut rec).await?;
     rec("PASS", (settled == ISSUE_AMOUNT).to_string());
     ensure!(settled == ISSUE_AMOUNT, "dave not settled");
-    println!("\nSTAGE 5 SWEEP RECOVERY RESULT: PASS");
+    println!("\nSWEEP RECOVERY RESULT: PASS");
     Ok(())
 }

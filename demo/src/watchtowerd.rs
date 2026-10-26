@@ -1,4 +1,4 @@
-//! Stage 4 / Workstream A: standalone exit-watchtower daemon (`--watchtowerd <dir>`).
+//! Standalone exit-watchtower daemon (`ark-rgb-demo watchtowerd <dir>`).
 //!
 //! * Own state dir: `<dir>/registrations/*.json` (written by wallets before going offline),
 //!   `<dir>/status/<id>.json` (persisted progress, so a restart resumes), `<dir>/daemon.log`.

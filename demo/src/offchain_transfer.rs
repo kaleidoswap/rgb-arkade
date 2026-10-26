@@ -1,4 +1,4 @@
-//! Stage 1: multi-hop off-chain RGB transfers on Arkade (requires the patched `arkd:rgb`).
+//! Scenario `offchain-transfer`: multi-hop off-chain RGB transfers on Arkade (requires the patched `arkd:rgb`).
 //!
 //! jump-in (on-chain genesis -> explicit seal on Alice's VTXO V)
 //!   -> hop A->B (T1 in checkpoint: V -> CP_A:1; T2 in ark tx: CP_A:1 -> Bob)
@@ -98,7 +98,7 @@ pub(crate) async fn rgb_hop(
     ensure!(cp_txid == cp_txid_colored, "checkpoint txid {cp_txid} != colored {cp_txid_colored}");
     println!("[{label}] checkpoint outputs {:?}", outs(&checkpoint_txs[0]));
 
-    // (3) T2 in the ark tx: CP:1 -> receiver(s)/change. 0-value OP_RETURN at index 0 (arkd patch 2).
+    // (3) T2 in the ark tx: CP:1 -> receiver(s)/change. 0-value OP_RETURN at index 0 (arkd: 0-sat data output).
     ark_tx.unsigned_tx.output.insert(0, bare_opret(Amount::ZERO));
     ark_tx.outputs.insert(0, psbt::Output::default());
     let mut ark_colored = ark_tx.clone();
@@ -151,8 +151,8 @@ pub(crate) async fn wait_vtxo(client: &ArkClient, outpoint: OutPoint, who: &str)
 }
 
 pub async fn run() -> anyhow::Result<()> {
-    let run_id = format!("run-{}-stage1", now());
-    let state = PathBuf::from("/workspace/rgb-arkade/state").join(&run_id);
+    let run_id = format!("run-{}-offchain-transfer", now());
+    let state = crate::paths::state().join(&run_id);
     std::fs::create_dir_all(&state)?;
     println!("run id {run_id}, state dir {}", state.display());
     let mut summary = serde_json::Map::new();
@@ -163,7 +163,7 @@ pub async fn run() -> anyhow::Result<()> {
     };
     let regtest = Arc::new(Regtest::new());
 
-    step("S1.1: clients, Alice boards");
+    step("1. clients, Alice boards");
     let (alice, _) = ark_client("alice", regtest.clone(), &state).await?;
     let (bob, _) = ark_client("bob", regtest.clone(), &state).await?;
     let (carol, carol_w) = ark_client("carol", regtest.clone(), &state).await?;
@@ -178,12 +178,12 @@ pub async fn run() -> anyhow::Result<()> {
     let (mut carol_rgb, carol_online) = bl(|| rgb_wallet("carol", &state))?;
     let (mut dave_rgb, dave_online) = bl(|| rgb_wallet("dave", &state))?;
 
-    step("S1.2: on-chain genesis + jump-in to Alice's VTXO V");
+    step("2. on-chain genesis + jump-in to Alice's VTXO V");
     let asset_id = onchain_genesis_jump_in(&regtest, &mut alice_rgb, &alice_online, v.outpoint, &state, &mut |k, val| rec(k, val, &mut summary)).await?;
     rec("asset_id", asset_id.clone(), &mut summary);
     let contract_id = ContractId::from_str(&asset_id).map_err(|e| anyhow!("{e}"))?;
 
-    step("S1.3: hop Alice -> Bob (T1 in checkpoint, T2 in ark tx)");
+    step("3. hop Alice -> Bob (T1 in checkpoint, T2 in ark tx)");
     let (bob_addr, _) = bob.get_offchain_address().await?;
     let (alice_change, alice_change_vtxo) = alice.get_offchain_address().await?;
     let ab = rgb_hop(
@@ -223,7 +223,7 @@ pub async fn run() -> anyhow::Result<()> {
     };
     rec("bob_accept_assignments", format!("{bob_assign:?}"), &mut summary);
 
-    step("S1.4: hop Bob -> Carol (700 to Carol, 300 asset change to Bob)");
+    step("4. hop Bob -> Carol (700 to Carol, 300 asset change to Bob)");
     let (carol_addr, _) = carol.get_offchain_address().await?;
     let (bob_change, bob_change_vtxo) = bob.get_offchain_address().await?;
     let bc = rgb_hop(
@@ -259,7 +259,7 @@ pub async fn run() -> anyhow::Result<()> {
     let bob_assets = bl(|| bob_rgb.list_assets(vec![]))?;
     println!("[bob] list_assets after hop B->C: {:?}", bob_assets.nia);
 
-    step("S1.5: Carol unilateral exit of the RGB VTXO");
+    step("5. Carol unilateral exit of the RGB VTXO");
     let carol_onchain = carol.get_onchain_address()?;
     regtest::faucet(&carol_onchain, CAROL_ONCHAIN_BTC)?;
     let mut funded = false;
@@ -299,7 +299,7 @@ pub async fn run() -> anyhow::Result<()> {
     let upd = bl(|| carol_rgb.update_witnesses(carol_online.clone(), 0, vec![]))?;
     println!("[carol] update_witnesses: {upd:?}");
 
-    step("S1.6: after the exit delay, Carol sends on-chain to Dave");
+    step("6. after the exit delay, Carol sends on-chain to Dave");
     let dave_recv = bl(|| dave_rgb.witness_receive(None, Assignment::Fungible(CAROL_ASSET), now() + 86_400, vec![], 1))?;
     let dave_script = rgb_lib::utils::script_buf_from_recipient_id(dave_recv.recipient_id.clone())?
         .ok_or_else(|| anyhow!("not a witness recipient"))?;
@@ -387,7 +387,7 @@ pub async fn run() -> anyhow::Result<()> {
     rec("dave_balance", format!("{bal:?}"), &mut summary);
     let pass = assets.nia.as_ref().is_some_and(|v| v.iter().any(|a| a.asset_id == asset_id)) && bal.settled == CAROL_ASSET;
     rec("PASS", pass.to_string(), &mut summary);
-    println!("\nSTAGE 1 RESULT: {}", if pass { "PASS" } else { "FAIL" });
+    println!("\nOFFCHAIN TRANSFER RESULT: {}", if pass { "PASS" } else { "FAIL" });
     if !pass {
         bail!("Dave balance check failed");
     }

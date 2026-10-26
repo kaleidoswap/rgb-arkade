@@ -10,7 +10,7 @@ index 477dd4f..9e40cd3 100644
 +
 +use ark_core::batch::create_and_sign_forfeit_txs_with_hook;
 +
-+/// [rgb-arkade patch] Context handed to a forfeit hook: the forfeited VTXO, the unsigned
++/// [rgb-arkade] Context handed to a forfeit hook: the forfeited VTXO, the unsigned
 +/// commitment tx of the batch and the leaves of the batch VTXO tree (empty if the batch has no
 +/// VTXO outputs). From these the hook can locate the replacement VTXO (refresh) or the on-chain
 +/// output (collaborative exit) before the forfeit is signed.
@@ -27,7 +27,7 @@ index 477dd4f..9e40cd3 100644
                      spend_selection,
                      false,
 -                    entry.vtxo().is_swept,
-+                    // [rgb-arkade patch 6] RGB recovery: forfeit swept VTXOs too
++                    // [rgb-arkade: recovery-forfeit] RGB recovery: forfeit swept VTXOs too
 +                    entry.vtxo().is_swept && !ark_core::intent::rgb_recovery_forfeit(),
                      entry.vtxo().assets.clone(),
                  ))
@@ -36,13 +36,13 @@ index 477dd4f..9e40cd3 100644
          })
      }
  
-+    /// [rgb-arkade patch 6] Public view of the batch-settleable inputs for `outpoints` (tests).
++    /// [rgb-arkade: recovery-forfeit] Public view of the batch-settleable inputs for `outpoints` (tests).
 +    pub async fn rgb_settleable_inputs(&self, outpoints: &[OutPoint]) -> Result<Vec<intent::Input>, Error> {
 +        let server_info = self.server_info().await?;
 +        self.selected_batch_settleable_vtxo_inputs(&server_info, outpoints.iter().copied()).await
 +    }
 +
-+    /// [rgb-arkade patch 6] Sign an intent with this client's keys (tests).
++    /// [rgb-arkade: recovery-forfeit] Sign an intent with this client's keys (tests).
 +    pub fn rgb_sign_intent(
 +        &self,
 +        inputs: Vec<intent::Input>,
@@ -71,7 +71,7 @@ index 477dd4f..9e40cd3 100644
 +        .await
 +    }
 +
-+    /// [rgb-arkade patch] Settle the given VTXOs into the next batch, paying everything to
++    /// [rgb-arkade] Settle the given VTXOs into the next batch, paying everything to
 +    /// `to_address`, with `forfeit_hook` run on every forfeit PSBT before signing. Single
 +    /// attempt (no retry). Returns the commitment txid.
 +    pub async fn settle_vtxos_with_forfeit_hook<R, H>(
@@ -104,7 +104,7 @@ index 477dd4f..9e40cd3 100644
 +        .await
 +    }
 +
-+    /// [rgb-arkade patch] Collaborative exit of the given VTXOs: `to_amount` to the on-chain
++    /// [rgb-arkade] Collaborative exit of the given VTXOs: `to_amount` to the on-chain
 +    /// `to_address`, the rest (minus the server's on-chain output fee) to an offchain change
 +    /// address, with `forfeit_hook` run on every forfeit PSBT before signing. Single attempt.
 +    pub async fn collaborative_redeem_vtxos_with_forfeit_hook<R, H>(
@@ -332,7 +332,7 @@ index 65a90c0..35c8e93 100644
 +    )
 +}
 +
-+/// [rgb-arkade patch] Like [`create_and_sign_forfeit_txs`], but `hook(vtxo_outpoint, psbt)` runs
++/// [rgb-arkade] Like [`create_and_sign_forfeit_txs`], but `hook(vtxo_outpoint, psbt)` runs
 +/// on each unsigned forfeit PSBT before it is signed, e.g. to insert a 0-value
 +/// `OP_RETURN <32B>` at output index 0 carrying an RGB commitment (arkd `arkd:rgb` rebuilds
 +/// forfeits with it). The VTXO signature (SIGHASH_DEFAULT) then commits to it.
@@ -364,8 +364,8 @@ index 6657dc1..5ec4cb0 100644
      GetPendingTx { expire_at: u64 },
  }
  
-+/// [rgb-arkade patch 6] When set, register intents carry `"rgb_recovery_forfeit": true` and swept
-+/// VTXOs are forfeited like live ones (arkd `arkd:rgb` patch 6), so the forfeit can carry the RGB
++/// [rgb-arkade: recovery-forfeit] When set, register intents carry `"rgb_recovery_forfeit": true` and swept
++/// VTXOs are forfeited like live ones (arkd recovery-forfeit change), so the forfeit can carry the RGB
 +/// transition of a swept colored VTXO into the new batch.
 +pub static RGB_RECOVERY_FORFEIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 +
@@ -394,7 +394,7 @@ index 479464c..8d94835 100644
      outpoint: OutPoint,
      /// All the assets carried by this VTXO.
      assets: Vec<Asset>,
-+    /// [rgb-arkade patch] Optional 32-byte payload (e.g. an RGB opret commitment) emitted in the
++    /// [rgb-arkade] Optional 32-byte payload (e.g. an RGB opret commitment) emitted in the
 +    /// checkpoint tx as a 0-value `OP_RETURN <32 bytes>` at index 0 (checkpoint output moves to 1). Requires
 +    /// an arkd that rebuilds checkpoints with it (`arkd:rgb`).
 +    checkpoint_op_return: Option<[u8; 32]>,
@@ -409,7 +409,7 @@ index 479464c..8d94835 100644
          }
      }
  
-+    /// [rgb-arkade patch] Set (or clear) the checkpoint OP_RETURN payload for this input.
++    /// [rgb-arkade] Set (or clear) the checkpoint OP_RETURN payload for this input.
 +    pub fn with_checkpoint_op_return(mut self, payload: Option<[u8; 32]>) -> Self {
 +        self.checkpoint_op_return = payload;
 +        self
@@ -473,7 +473,7 @@ index 479464c..8d94835 100644
      Ok((unsigned_checkpoint_psbt, checkpoint_spend_info))
  }
  
-+/// [rgb-arkade patch] Vout of the checkpoint output: 1 when the checkpoint carries a user
++/// [rgb-arkade] Vout of the checkpoint output: 1 when the checkpoint carries a user
 +/// OP_RETURN (placed first), 0 otherwise (upstream layout).
 +pub fn checkpoint_output_index(tx: &Transaction) -> usize {
 +    match tx.output.first() {
@@ -573,7 +573,7 @@ index 9b6cf4b..61f9a51 100644
          Ok(stream.boxed())
      }
  
-+    /// [rgb-arkade patch] TXIDs of the forfeit txs submitted for a commitment tx (indexer
++    /// [rgb-arkade] TXIDs of the forfeit txs submitted for a commitment tx (indexer
 +    /// `GetForfeitTxs`, first 1000).
 +    pub async fn get_forfeit_txids(&self, commitment_txid: String) -> Result<Vec<String>, Error> {
 +        let response = self
@@ -593,7 +593,7 @@ index 9b6cf4b..61f9a51 100644
 +        Ok(response.into_inner().txids)
 +    }
 +
-+    /// [rgb-arkade patch] TXIDs of the connector-tree txs of a commitment tx (indexer
++    /// [rgb-arkade] TXIDs of the connector-tree txs of a commitment tx (indexer
 +    /// `GetConnectors`, first 1000).
 +    pub async fn get_connector_txids(&self, commitment_txid: String) -> Result<Vec<String>, Error> {
 +        let response = self

@@ -1,4 +1,4 @@
-//! Stage 3 / Part A: self-contained Ark proofs (sidecar `<consignment>.arkproof.json`).
+//! Self-contained Ark proofs (sidecar `<consignment>.arkproof.json`).
 //!
 //! Sender side (uses arkd): collect the PSBT of every unmined RGB witness and of every unmined
 //! ancestor down to a mined tx (`GetVirtualTxs`), carrying the proofs received earlier.
@@ -34,7 +34,7 @@ pub(crate) struct ProofFile {
     pub vtxos: Vec<String>,
 }
 
-/// Stage 6: declare `fid` (a witness of the proof) as a sweep-recovery forfeit.
+/// Declare `fid` (a witness of the proof) as a sweep-recovery forfeit.
 pub(crate) fn mark_recovery(path: &Path, fid: Txid) -> anyhow::Result<()> {
     let mut f = load(path)?;
     ensure!(f.witnesses.contains(&fid.to_string()), "{fid} is not a witness of {}", path.display());
@@ -45,7 +45,7 @@ pub(crate) fn mark_recovery(path: &Path, fid: Txid) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Stage 6: bundle the branch of each VTXO in `vtxos` (unmined ancestors from arkd) and list it,
+/// Bundle the branch of each VTXO in `vtxos` (unmined ancestors from arkd) and list it,
 /// so the receiver can track its liveness from the chain.
 pub(crate) async fn add_vtxos(client: &ArkClient, regtest: &Regtest, path: &Path, vtxos: &[bitcoin::OutPoint]) -> anyhow::Result<()> {
     let mut f = if path.exists() { load(path)? } else { ProofFile { version: 1, witnesses: vec![], psbts: vec![], recoveries: vec![], vtxos: vec![] } };
@@ -75,7 +75,6 @@ pub(crate) async fn add_vtxos(client: &ArkClient, regtest: &Regtest, path: &Path
 }
 
 pub(crate) struct ProofStats {
-    pub path: PathBuf,
     pub bytes: u64,
     pub n_psbts: usize,
     pub n_witnesses: usize,
@@ -151,7 +150,7 @@ pub(crate) async fn build_proof(
     std::fs::write(out, serde_json::to_string(&file)?)?;
     let bytes = std::fs::metadata(out)?.len();
     println!("[proof] {} : {} witnesses, {} PSBTs, {} bytes", out.display(), file.witnesses.len(), file.psbts.len(), bytes);
-    Ok(ProofStats { path: out.to_path_buf(), bytes, n_psbts: file.psbts.len(), n_witnesses: file.witnesses.len() })
+    Ok(ProofStats { bytes, n_psbts: file.psbts.len(), n_witnesses: file.witnesses.len() })
 }
 
 fn arkd_reachable() -> bool {

@@ -1,15 +1,15 @@
-//! Stage 4 / Workstream B: out-of-band payload size and validation time.
+//! Benchmarks: out-of-band payload size and validation time.
 //!
-//! `--bench <dir> <phase> [n]` with phase in: hops (n off-chain hops A<->B), refresh (n refreshes),
+//! `bench <dir> <phase> <n>` with phase in: hops (n off-chain hops A<->B), refresh (n refreshes),
 //! merge (k on-chain inputs from k senders merged into one payment), onchain (n mined hops).
 //! Every measurement row goes to `<dir>/<phase>.jsonl`. With `--pause` arkd is paused while the
 //! verifier wallets validate (proof verification never talks to arkd).
 //! Also implements the compact binary proof (`.arkproof.bin`): only what the verifier reads
 //! (unsigned tx, key-path sig, the one signed leaf + control block + sigs in script key order).
 use crate::proof::{ProofFile, build_proof, file_len, import, operators, proof_path};
-use crate::stage1::{rgb_hop, wait_vtxo};
-use crate::stage2::{BatchOp, colored_batch, first_vtxo, mine_until};
-use crate::{ArkClient, ISSUE_AMOUNT, ark_client, bare_opret, bl, board, now, onchain_genesis_jump_in, regtest, rgb_wallet, step};
+use crate::offchain_transfer::{rgb_hop, wait_vtxo};
+use crate::forfeit::{BatchOp, colored_batch, first_vtxo, mine_until};
+use crate::{ISSUE_AMOUNT, ark_client, bare_opret, bl, board, now, onchain_genesis_jump_in, regtest, rgb_wallet, step};
 use anyhow::{anyhow, ensure};
 use ark_core::send::SendReceiver;
 use bitcoin::taproot::{ControlBlock, LeafVersion, TapLeafHash};
@@ -496,6 +496,3 @@ async fn onchain_pay(
     }
     anyhow::bail!("payment {txid} never settled")
 }
-
-#[allow(dead_code)]
-fn _unused(_: &ArkClient) {}

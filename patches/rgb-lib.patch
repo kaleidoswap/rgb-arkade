@@ -4,7 +4,7 @@ index 0000000..7ffc030
 --- /dev/null
 +++ b/src/ark_proof.rs
 @@ -0,0 +1,579 @@
-+//! [rgb-arkade patch] Self-contained Ark proofs for unmined RGB witnesses.
++//! [rgb-arkade] Self-contained Ark proofs for unmined RGB witnesses.
 +//!
 +//! A proof (`*.arkproof.json`, sidecar of a consignment) lists the RGB witness txids that are
 +//! Arkade virtual txs (checkpoint, ark tx, forfeit) and the PSBTs of every virtual tx needed to
@@ -18,7 +18,7 @@ index 0000000..7ffc030
 +//!   script-path input needs a leaf whose control block commits to the prevout key and in which
 +//!   *every* `CHECKSIG(VERIFY)` key has a valid signature. Sighash must be DEFAULT or ALL;
 +//! - a listed witness with a fully signed operator leaf on one input (a forfeit: VTXO input
-+//!   co-signed by user + operator, arkd patch 5) may spend an unsigned, operator-only branch on
++//!   co-signed by user + operator, arkd forfeit-cosign change) may spend an unsigned, operator-only branch on
 +//!   its other input (the connector branch), which is checked by txid linkage only: the signed
 +//!   input's SIGHASH_DEFAULT commits to the connector outpoint, so the operator's co-signature
 +//!   binds the forfeit to that connector of the mined commitment tx;
@@ -52,18 +52,18 @@ index 0000000..7ffc030
 +    pub witnesses: Vec<String>,
 +    /// Base64 PSBTs of the witnesses and of every unmined ancestor down to a mined tx.
 +    pub psbts: Vec<String>,
-+    /// [Stage 6] Witnesses (forfeit txids) claimed to be *sweep recoveries*: accepted only if the
++    /// [rgb-arkade] Witnesses (forfeit txids) claimed to be *sweep recoveries*: accepted only if the
 +    /// chain shows that the forfeited VTXO's branch was swept (a mined ancestor output spent by
 +    /// a tx that is not the next branch tx), so the VTXO can never be published on-chain.
 +    #[serde(default, skip_serializing_if = "Vec::is_empty")]
 +    pub recoveries: Vec<String>,
-+    /// [Stage 6] VTXO outpoints (`txid:vout`) whose branch PSBTs are bundled, so that the
++    /// [rgb-arkade] VTXO outpoints (`txid:vout`) whose branch PSBTs are bundled, so that the
 +    /// receiver can track their liveness (active / swept -> to recover / unrolled) from the chain.
 +    #[serde(default, skip_serializing_if = "Vec::is_empty")]
 +    pub vtxos: Vec<String>,
 +}
 +
-+/// [Stage 6] A mined outpoint a VTXO's branch hangs from, and the bundled tx that spends it.
++/// [rgb-arkade] A mined outpoint a VTXO's branch hangs from, and the bundled tx that spends it.
 +#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 +pub struct ArkAnchor {
 +    /// Mined outpoint (`txid:vout`), normally a batch output of a commitment tx.
@@ -74,11 +74,11 @@ index 0000000..7ffc030
 +    pub child: String,
 +}
 +
-+/// [Stage 6] Chain lookup: spender of a mined outpoint -> (spending txid, confirmed).
++/// [rgb-arkade] Chain lookup: spender of a mined outpoint -> (spending txid, confirmed).
 +pub(crate) type SpenderFn<'a> =
 +    &'a dyn Fn(ProofOutPoint, &ProofScript) -> Result<Option<(ProofTxid, bool)>, String>;
 +
-+/// [Stage 6] Liveness of a colored VTXO, derived from the chain only.
++/// [rgb-arkade] Liveness of a colored VTXO, derived from the chain only.
 +#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 +pub enum ArkVtxoStatus {
 +    /// Branch not swept, VTXO not on-chain: spendable off-chain.
@@ -97,7 +97,7 @@ index 0000000..7ffc030
 +    },
 +}
 +
-+/// [Stage 6] Ark-aware balance of one asset: state on tracked VTXOs, by liveness.
++/// [rgb-arkade] Ark-aware balance of one asset: state on tracked VTXOs, by liveness.
 +#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 +pub struct ArkAssetBalance {
 +    /// On active VTXOs (spendable off-chain).
@@ -112,7 +112,7 @@ index 0000000..7ffc030
 +    pub vtxos: Vec<(String, u64, ArkVtxoStatus)>,
 +}
 +
-+/// [Stage 6] A tracked VTXO (wallet dir `ark_vtxos.json`).
++/// [rgb-arkade] A tracked VTXO (wallet dir `ark_vtxos.json`).
 +#[derive(Debug, Clone, Serialize, Deserialize)]
 +pub struct ArkVtxoRecord {
 +    /// `txid:vout`.
@@ -128,7 +128,7 @@ index 0000000..7ffc030
 +    pub owned: bool,
 +}
 +
-+/// [Stage 6] A custom-colored (Arkade) transfer made by this wallet (`ark_transfers.json`).
++/// [rgb-arkade] A custom-colored (Arkade) transfer made by this wallet (`ark_transfers.json`).
 +#[derive(Debug, Clone, Serialize, Deserialize)]
 +pub struct ArkTransferRecord {
 +    /// Witness txid (checkpoint, ark tx, forfeit or on-chain tx).
@@ -145,7 +145,7 @@ index 0000000..7ffc030
 +    pub status: String,
 +}
 +
-+/// [Stage 6] Full verification result.
++/// [rgb-arkade] Full verification result.
 +pub(crate) struct ArkProofVerified {
 +    pub witnesses: VerifiedArkWitnesses,
 +    /// vtxo outpoint -> (anchors, branch txids)
@@ -154,7 +154,7 @@ index 0000000..7ffc030
 +    pub recoveries: Vec<(String, String)>,
 +}
 +
-+/// [Stage 6] Two operator-co-signed forfeits spending the same VTXO (publishable evidence).
++/// [rgb-arkade] Two operator-co-signed forfeits spending the same VTXO (publishable evidence).
 +#[derive(Debug, Clone, Serialize, Deserialize)]
 +pub struct ArkFraudProof {
 +    /// Format version (1).
@@ -171,7 +171,7 @@ index 0000000..7ffc030
 +    pub proof_b: ArkProof,
 +}
 +
-+/// [Stage 6] What a valid fraud proof establishes.
++/// [rgb-arkade] What a valid fraud proof establishes.
 +#[derive(Debug, Clone, Serialize, Deserialize)]
 +pub struct ArkFraudEvidence {
 +    /// The VTXO spent twice.
@@ -258,7 +258,7 @@ index 0000000..7ffc030
 +}
 +
 +impl<R: ResolveWitness> Verifier<'_, R> {
-+    /// [Stage 6] Mined outpoints the bundled tx `txid` hangs from, plus the bundled branch txids.
++    /// [rgb-arkade] Mined outpoints the bundled tx `txid` hangs from, plus the bundled branch txids.
 +    fn anchors(&self, txid: ProofTxid) -> Result<(Vec<ArkAnchor>, Vec<String>), String> {
 +        let mut anchors = vec![];
 +        let mut branch = vec![];
@@ -424,7 +424,7 @@ index 0000000..7ffc030
 +    Ok(verify_ark_proof_ext(proof, resolver, operator_pubkey, None)?.witnesses)
 +}
 +
-+/// [Stage 6] Is `anchor` swept, i.e. spent on-chain (confirmed) by a tx other than its branch child?
++/// [rgb-arkade] Is `anchor` swept, i.e. spent on-chain (confirmed) by a tx other than its branch child?
 +pub(crate) fn anchor_sweep(a: &ArkAnchor, spender: SpenderFn) -> Result<Option<String>, String> {
 +    let op = ProofOutPoint::from_str(&a.outpoint).map_err(|e| e.to_string())?;
 +    let spk = ProofScript::from_hex(&a.script_pubkey).map_err(|e| e.to_string())?;
@@ -434,7 +434,7 @@ index 0000000..7ffc030
 +    })
 +}
 +
-+/// [Stage 6] Verify `proof`, its `vtxos` branches and its `recoveries` (needs `spender`).
++/// [rgb-arkade] Verify `proof`, its `vtxos` branches and its `recoveries` (needs `spender`).
 +pub(crate) fn verify_ark_proof_ext<R: ResolveWitness>(
 +    proof: &ArkProof,
 +    resolver: &R,
@@ -526,7 +526,7 @@ index 0000000..7ffc030
 +    Ok(ArkProofVerified { witnesses: out, vtxos, recoveries })
 +}
 +
-+/// [Stage 6] Verify a fraud proof: both forfeits verify strictly (operator-co-signed VTXO input,
++/// [rgb-arkade] Verify a fraud proof: both forfeits verify strictly (operator-co-signed VTXO input,
 +/// linked to a mined commitment) and spend the same VTXO.
 +pub(crate) fn verify_ark_fraud<R: ResolveWitness>(
 +    f: &ArkFraudProof,
@@ -613,14 +613,14 @@ index ec2d234..ccc4441 100644
      }
  }
  
-+/// [rgb-arkade patch] File (in the wallet dir) holding the Ark-attested witness txs.
++/// [rgb-arkade] File (in the wallet dir) holding the Ark-attested witness txs.
 +pub(crate) const ARK_ATTESTED_WITNESSES_FILE: &str = "ark_attested_witnesses.json";
-+/// [Stage 6] tracked colored VTXOs
++/// [rgb-arkade] tracked colored VTXOs
 +pub(crate) const ARK_VTXOS_FILE: &str = "ark_vtxos.json";
-+/// [Stage 6] custom-colored transfers log
++/// [rgb-arkade] custom-colored transfers log
 +pub(crate) const ARK_TRANSFERS_FILE: &str = "ark_transfers.json";
 +
-+/// [rgb-arkade patch] Ark-aware witness resolver.
++/// [rgb-arkade] Ark-aware witness resolver.
 +///
 +/// Arkade forfeit txs (and other virtual txs) can be legitimate RGB witnesses that are never
 +/// mined: in the honest case the forfeited VTXO never reaches the chain, and if it does the
@@ -664,7 +664,7 @@ index 2ef1fbf..222523e 100644
          })
      }
  
-+    /// [rgb-arkade Stage 6] Spender of a (mined) outpoint with script `spk`: (txid, confirmed).
++    /// [rgb-arkade] Spender of a (mined) outpoint with script `spk`: (txid, confirmed).
 +    pub(crate) fn spender_of(
 +        &self,
 +        outpoint: OutPoint,
@@ -701,7 +701,7 @@ index fb204cf..133e10b 100644
          &self.online_data().as_ref().unwrap().resolver
      }
  
-+    /// [rgb-arkade patch] Load the Ark-attested witness txs of this wallet (txid -> tx).
++    /// [rgb-arkade] Load the Ark-attested witness txs of this wallet (txid -> tx).
 +    fn ark_attested_witnesses(&self) -> HashMap<RgbTxid, BdkTransaction> {
 +        let path = self.wallet_dir().join(ARK_ATTESTED_WITNESSES_FILE);
 +        let Ok(content) = fs::read_to_string(&path) else {
@@ -720,7 +720,7 @@ index fb204cf..133e10b 100644
 +            .collect()
 +    }
 +
-+    /// [rgb-arkade patch] Anchor (commitment) txid of an Ark-attested witness: the safe-height
++    /// [rgb-arkade] Anchor (commitment) txid of an Ark-attested witness: the safe-height
 +    /// check of a never-mined attested witness uses the depth of the batch commitment tx it hangs
 +    /// from (the forfeit is only replaceable by reorging that commitment tx out).
 +    fn ark_attested_anchor(&self, txid: &str) -> Option<String> {
@@ -730,7 +730,7 @@ index fb204cf..133e10b 100644
 +        Some(map.get(txid)?.get("anchor")?.as_str()?.to_string())
 +    }
 +
-+    /// [rgb-arkade patch] Ark-aware resolver over this wallet's attested witnesses plus `extra`.
++    /// [rgb-arkade] Ark-aware resolver over this wallet's attested witnesses plus `extra`.
 +    fn ark_aware_resolver(
 +        &self,
 +        extra: HashMap<RgbTxid, BdkTransaction>,
@@ -756,7 +756,7 @@ index fb204cf..133e10b 100644
 -            consignment: &consignment,
 -            fallback: self.blockchain_resolver(),
 -        };
-+        // [rgb-arkade patch] terminal witness from the consignment (as OffchainResolver did) plus
++        // [rgb-arkade] terminal witness from the consignment (as OffchainResolver did) plus
 +        // this wallet's Ark-attested witnesses (e.g. never-mined forfeit txs)
 +        let terminal: HashMap<RgbTxid, BdkTransaction> = consignment
 +            .bundled_witnesses()
@@ -771,7 +771,7 @@ index fb204cf..133e10b 100644
          if !unsafe_txids.is_empty() {
              let safe_height = self.safe_height(batch_transfer.min_confirmations)?;
              for txid in unsafe_txids {
-+                // [rgb-arkade patch] never-mined Ark-attested witness: use its anchor's height
++                // [rgb-arkade] never-mined Ark-attested witness: use its anchor's height
 +                let txid = self.ark_attested_anchor(&txid).unwrap_or(txid);
                  let Some(tx_height) = self.tx_height(txid)? else {
                      return Ok(None);
@@ -781,7 +781,7 @@ index fb204cf..133e10b 100644
                  ValidTransfer::load_file(&valid_consignment_path).map_err(InternalError::from)?;
              let mut runtime = self.rgb_runtime()?;
 -            runtime.accept_transfer(valid_consignment.clone(), self.blockchain_resolver())?;
-+            // [rgb-arkade patch] Ark-attested witnesses resolve as Tentative
++            // [rgb-arkade] Ark-attested witnesses resolve as Tentative
 +            runtime.accept_transfer(valid_consignment.clone(), &self.ark_aware_resolver(HashMap::new()))?;
              let asset_schema: AssetSchema = valid_consignment.schema_id().try_into()?;
              if asset_schema == AssetSchema::Ifa {
@@ -794,7 +794,7 @@ index 11d45e5..fb6727e 100644
  
  use super::*;
  
-+/// [rgb-arkade patch] Where a custom-colored transition puts a state.
++/// [rgb-arkade] Where a custom-colored transition puts a state.
 +#[derive(Clone, Debug)]
 +pub enum SealTarget {
 +    /// An external outpoint (e.g. a VTXO or a predicted checkpoint output).
@@ -977,7 +977,7 @@ index 11d45e5..fb6727e 100644
 +        Ok(vec![transfer])
 +    }
 +
-+    /// [rgb-arkade patch] Generic single-asset coloring with caller-chosen seals.
++    /// [rgb-arkade] Generic single-asset coloring with caller-chosen seals.
 +    ///
 +    /// All the `contract_id` state found on the PSBT inputs is moved to `beneficiaries`, each a
 +    /// ([`SealTarget`], amount, blinding). [`SealTarget::WitnessVout`] uses the *exact* vout of
@@ -1073,7 +1073,7 @@ index 11d45e5..fb6727e 100644
 +        seals.extend(witness_vouts.into_iter().map(|v| ExplicitSeal::with(witness_txid, v)));
 +        let transfer = runtime.transfer(contract_id, seals, vec![], Some(witness_txid))?;
 +        drop(runtime);
-+        // [Stage 6] log the custom-colored transfer and mark consumed tracked VTXOs
++        // [rgb-arkade] log the custom-colored transfer and mark consumed tracked VTXOs
 +        let inputs: Vec<String> = prev_outputs.iter().map(|o| o.to_string()).collect();
 +        let outputs = beneficiaries
 +            .iter()
@@ -1107,7 +1107,7 @@ index 11d45e5..fb6727e 100644
 +        Ok(transfer)
 +    }
 +
-+    /// [rgb-arkade patch] Like [`accept_transfer_consignment`](Wallet::accept_transfer_consignment)
++    /// [rgb-arkade] Like [`accept_transfer_consignment`](Wallet::accept_transfer_consignment)
 +    /// but validating a consignment whose history contains a *chain* of offchain (Arkade
 +    /// virtual) witnesses: every txid in `offchain_txids` is resolved from the bundled witness
 +    /// as Tentative unless it is already mined, and so is every Ark-attested witness of this wallet
@@ -1138,7 +1138,7 @@ index 11d45e5..fb6727e 100644
 +        self.check_schema_support(&asset_schema)?;
 +        let mut runtime = self.rgb_runtime()?;
 +        runtime.store_secret_seal(GraphSeal::with_blinded_vout(vout, blinding))?;
-+        // [rgb-arkade patch] offchain witnesses from the consignment + Ark-attested witnesses
++        // [rgb-arkade] offchain witnesses from the consignment + Ark-attested witnesses
 +        let bundled: HashMap<RgbTxid, BdkTransaction> = consignment
 +            .bundled_witnesses()
 +            .filter(|bw| offchain_witnesses.contains(&bw.witness_id()))
@@ -1175,7 +1175,7 @@ index 11d45e5..fb6727e 100644
 +        Ok((consignment, received.into_values().collect()))
 +    }
 +
-+    /// [rgb-arkade patch] Validate a consignment file without accepting it, either with the
++    /// [rgb-arkade] Validate a consignment file without accepting it, either with the
 +    /// stock blockchain resolver (`ark_aware = false`) or with this wallet's Ark-aware resolver
 +    /// (`ark_aware = true`, i.e. also resolving the Ark-attested witnesses). For tests.
 +    #[cfg(any(feature = "electrum", feature = "esplora"))]
@@ -1213,7 +1213,7 @@ index 11d45e5..fb6727e 100644
 +        }
 +    }
 +
-+    /// [rgb-arkade patch] Verify a self-contained Ark proof (see [`crate::ark_proof`]) using only
++    /// [rgb-arkade] Verify a self-contained Ark proof (see [`crate::ark_proof`]) using only
 +    /// the proof file and the blockchain (no arkd), then register every proven witness as
 +    /// Ark-attested, anchored to its most recent mined ancestor. `operator_pubkey` is the pinned
 +    /// Ark operator signer key (wallet config, hex). Returns the registered txids.
@@ -1246,7 +1246,7 @@ index 11d45e5..fb6727e 100644
 +        for (fid, sweep) in &verified.recoveries {
 +            info!(self.logger(), "Ark proof: recovery forfeit {} accepted, branch swept by {}", fid, sweep);
 +        }
-+        // [Stage 6] track the bundled VTXOs (liveness from the chain)
++        // [rgb-arkade] track the bundled VTXOs (liveness from the chain)
 +        let mut reg: HashMap<String, crate::ark_proof::ArkVtxoRecord> = self.ark_json_load(ARK_VTXOS_FILE);
 +        for (o, (anchors, branch)) in verified.vtxos {
 +            let spent_by = reg.get(&o).and_then(|r| r.spent_by.clone());
@@ -1284,7 +1284,7 @@ index 11d45e5..fb6727e 100644
 +        fs::write(self.wallet_dir().join(name), text).map_err(|e| Error::Internal { details: e.to_string() })
 +    }
 +
-+    /// [rgb-arkade Stage 6] Liveness of a tracked colored VTXO, from the chain only (indexer):
++    /// [rgb-arkade] Liveness of a tracked colored VTXO, from the chain only (indexer):
 +    /// swept branch -> `ToRecover`, mined VTXO tx -> `Unrolled`, consumed by this wallet ->
 +    /// `Spent`, otherwise `Active`. The VTXO must have been tracked via an Ark proof `vtxos` entry.
 +    #[cfg(any(feature = "electrum", feature = "esplora"))]
@@ -1319,7 +1319,7 @@ index 11d45e5..fb6727e 100644
 +        Ok(ArkVtxoStatus::Active)
 +    }
 +
-+    /// [rgb-arkade Stage 6] Ark-aware balance of `asset_id`: the state this wallet's RGB stock
++    /// [rgb-arkade] Ark-aware balance of `asset_id`: the state this wallet's RGB stock
 +    /// holds on tracked VTXOs, split by liveness (active / to recover / unrolled / in flight).
 +    /// Unlike [`get_asset_balance`](Wallet::get_asset_balance) (DB, on-chain UTXOs only), a swept
 +    /// VTXO is reported as `to_recover`, never as settled.
@@ -1370,7 +1370,7 @@ index 11d45e5..fb6727e 100644
 +        Ok(bal)
 +    }
 +
-+    /// [rgb-arkade Stage 6] Accept a consignment that assigns state to an *explicit* VTXO seal
++    /// [rgb-arkade] Accept a consignment that assigns state to an *explicit* VTXO seal
 +    /// `outpoint` (refresh / recovery forfeit paying this wallet). Import the Ark proof first
 +    /// (it attests the forfeit and tracks `outpoint`). Returns the amount received on it.
 +    #[cfg(any(feature = "electrum", feature = "esplora"))]
@@ -1418,7 +1418,7 @@ index 11d45e5..fb6727e 100644
 +        Ok(amount)
 +    }
 +
-+    /// [rgb-arkade Stage 6] Declare a tracked VTXO as owned by this wallet (e.g. own change or
++    /// [rgb-arkade] Declare a tracked VTXO as owned by this wallet (e.g. own change or
 +    /// own refresh output; received VTXOs are marked automatically). Untracked outpoints get a
 +    /// record without anchors (liveness then unknown -> reported `Active`).
 +    pub fn ark_set_vtxo_owned(&self, outpoint: String, owned: bool) -> Result<(), Error> {
@@ -1429,12 +1429,12 @@ index 11d45e5..fb6727e 100644
 +        self.ark_json_save(ARK_VTXOS_FILE, &reg)
 +    }
 +
-+    /// [rgb-arkade Stage 6] The custom-colored (Arkade) transfers this wallet made.
++    /// [rgb-arkade] The custom-colored (Arkade) transfers this wallet made.
 +    pub fn list_ark_transfers(&self) -> Result<Vec<crate::ark_proof::ArkTransferRecord>, Error> {
 +        Ok(self.ark_json_load(ARK_TRANSFERS_FILE))
 +    }
 +
-+    /// [rgb-arkade Stage 6] Roll back a custom-colored transfer whose witness can never exist
++    /// [rgb-arkade] Roll back a custom-colored transfer whose witness can never exist
 +    /// (e.g. the forfeit of a failed batch): archive the witness in the RGB stock (its
 +    /// assignments disappear, the consumed state is spendable again), un-mark the consumed
 +    /// VTXOs and mark the log entry `rolled_back`. Refused if the witness is mined/in the
@@ -1469,7 +1469,7 @@ index 11d45e5..fb6727e 100644
 +        Ok(())
 +    }
 +
-+    /// [rgb-arkade Stage 6] Verify a fraud proof (two operator-co-signed forfeits of the same
++    /// [rgb-arkade] Verify a fraud proof (two operator-co-signed forfeits of the same
 +    /// VTXO, each linked to a mined commitment tx) with the chain only.
 +    #[cfg(any(feature = "electrum", feature = "esplora"))]
 +    pub fn verify_ark_fraud_proof(&self, online: Online, path: PathBuf, operator_pubkey: String) -> Result<crate::ark_proof::ArkFraudEvidence, Error> {
@@ -1480,7 +1480,7 @@ index 11d45e5..fb6727e 100644
 +            .map_err(|details| Error::Internal { details: format!("fraud proof rejected: {details}") })
 +    }
 +
-+    /// [rgb-arkade patch] Register a consensus-hex-encoded tx as an *Ark-attested* RGB witness.
++    /// [rgb-arkade] Register a consensus-hex-encoded tx as an *Ark-attested* RGB witness.
 +    ///
 +    /// Use it for Arkade txs that legitimately close RGB seals but may never be mined, i.e. the
 +    /// forfeit tx of a colored VTXO that was refreshed or collaboratively exited. The caller MUST
@@ -1528,7 +1528,7 @@ index 11d45e5..fb6727e 100644
      ) -> Result<UpdateRes, Error> {
          info!(self.logger(), "Updating witnesses...");
          self.check_online(online)?;
-+        // [rgb-arkade patch] Ark-attested witnesses stay Tentative instead of being archived
++        // [rgb-arkade] Ark-attested witnesses stay Tentative instead of being archived
          let update_res = self.rgb_runtime()?.update_witnesses(
 -            self.blockchain_resolver(),
 +            &self.ark_aware_resolver(HashMap::new()),

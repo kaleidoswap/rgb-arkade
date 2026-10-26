@@ -1,4 +1,4 @@
-//! Stage 2: RGB commitment in the *forfeit* tx (requires `arkd:rgb` v0.9.15-rgb2, patch 4).
+//! RGB commitment in the *forfeit* tx (requires the patched `arkd:rgb`).
 //!
 //! The forfeit tx F of a colored VTXO V is the only tx that spends V when V is refreshed into a
 //! new batch or collaboratively exited, so F carries `OP_RETURN <32B>` (index 0, 0 sat) closing
@@ -7,13 +7,13 @@
 //! in `GetConnectors(C)`, commitment tx C mined) and registers it in rgb-lib as an Ark-attested
 //! witness (resolved as Tentative unless mined).
 //!
-//! `--stage2-refresh`: jump-in to V -> refresh V -> V' (T_f in F) -> hop V' -> Bob (T1/T2) ->
+//! `scenario refresh`: jump-in to V -> refresh V -> V' (T_f in F) -> hop V' -> Bob (T1/T2) ->
 //!     Bob unilateral exit -> Bob sends on-chain to Carol. PASS = Carol settled.
-//! `--stage2-exit`: jump-in to V -> collaborative exit of V to Alice's on-chain address O = C:vout
+//! `scenario collab-exit`: jump-in to V -> collaborative exit of V to Alice's on-chain address O = C:vout
 //!     (T_f in F) -> Alice spends O on-chain to Dave. PASS = Dave settled.
-//! `--stage2-neg`: negative tests (malformed checkpoint / forfeit OP_RETURNs rejected by arkd,
+//! `scenario forfeit-negatives`: negative tests (malformed checkpoint / forfeit OP_RETURNs rejected by arkd,
 //!     attestation of a commitment-less forfeit fails).
-use crate::stage1::{HopResult, arkd_virtual_txs_known, outs, rgb_hop, wait_vtxo};
+use crate::offchain_transfer::{HopResult, arkd_virtual_txs_known, outs, rgb_hop, wait_vtxo};
 use crate::{
     ArkClient, ISSUE_AMOUNT, ark_client, bare_opret, bl, board, color_and_commit, now,
     onchain_genesis_jump_in, regtest, rgb_wallet, step,
@@ -367,7 +367,7 @@ async fn receive_with_attestation(
     println!("[{who}] NEG: Ark-aware resolver *before* attestation: {r:?}");
     rec(&format!("neg_{who}_unattested_rejects"), r.is_err().to_string());
     ensure!(r.is_err(), "[{who}] unattested forfeit accepted");
-    // Stage 3: offline proof instead of asking arkd; arkd stays paused until settled
+    // offline proof instead of asking arkd; arkd stays paused until settled
     let _down = if crate::proof::offline_mode() {
         let operators = crate::proof::operators(&client.server_info().await?);
         let down = crate::proof::arkd_down(rec, who)?;
@@ -433,7 +433,7 @@ pub(crate) fn summary_rec(state: PathBuf) -> impl FnMut(&str, String) {
 
 pub(crate) fn new_state(tag: &str) -> anyhow::Result<PathBuf> {
     let run_id = format!("run-{}-{tag}", now());
-    let state = PathBuf::from("/workspace/rgb-arkade/state").join(&run_id);
+    let state = crate::paths::state().join(&run_id);
     std::fs::create_dir_all(&state)?;
     println!("run id {run_id}, state dir {}", state.display());
     Ok(state)
@@ -452,11 +452,11 @@ pub(crate) async fn first_vtxo(client: &ArkClient) -> anyhow::Result<OutPoint> {
 
 /// Scenario (a): refresh a colored VTXO, then hop + unilateral exit + on-chain send.
 pub async fn run_refresh() -> anyhow::Result<()> {
-    let state = new_state("stage2-refresh")?;
+    let state = new_state("refresh")?;
     let mut rec = summary_rec(state.clone());
     let regtest = Arc::new(Regtest::new());
 
-    step("S2a.1: clients, Alice boards, on-chain genesis + jump-in to V");
+    step("1. clients, Alice boards, on-chain genesis + jump-in to V");
     let (alice, _) = ark_client("alice", regtest.clone(), &state).await?;
     let (bob, bob_w) = ark_client("bob", regtest.clone(), &state).await?;
     let (carol, _) = ark_client("carol", regtest.clone(), &state).await?;
@@ -471,7 +471,7 @@ pub async fn run_refresh() -> anyhow::Result<()> {
     rec("asset_id", asset_id.clone());
     let contract_id = ContractId::from_str(&asset_id).map_err(|e| anyhow!("{e}"))?;
 
-    step("S2a.2: refresh V into a new batch; T_f committed in the forfeit tx (V -> V')");
+    step("2. refresh V into a new batch; T_f committed in the forfeit tx (V -> V')");
     let (alice_refresh_addr, _) = alice.get_offchain_address().await?;
     let (c1, fc) = colored_batch("refresh", &alice, &alice_rgb, contract_id, v, ISSUE_AMOUNT, BatchOp::Refresh(alice_refresh_addr)).await?;
     let v2 = fc.target;
@@ -487,7 +487,7 @@ pub async fn run_refresh() -> anyhow::Result<()> {
     let upd = bl(|| alice_rgb.update_witnesses(alice_online.clone(), 0, vec![]))?;
     println!("[alice] update_witnesses after refresh: {upd:?}");
 
-    step("S2a.3: hop Alice (V') -> Bob (T1 in checkpoint, T2 in ark tx)");
+    step("3. hop Alice (V') -> Bob (T1 in checkpoint, T2 in ark tx)");
     let (bob_addr, _) = bob.get_offchain_address().await?;
     let (alice_change, alice_change_vtxo) = alice.get_offchain_address().await?;
     let ab: HopResult = rgb_hop(
@@ -535,7 +535,7 @@ pub async fn run_refresh() -> anyhow::Result<()> {
     rec("bob_accept_assignments", format!("{bob_assign:?}"));
     drop(bob_down);
 
-    step("S2a.4: Bob unilateral exit");
+    step("4. Bob unilateral exit");
     fund_onchain("bob", &bob, &bob_w).await?;
     let branch = unilateral_exit("bob", &bob, &bob_w, ab.ark_txid).await?;
     rec("exit_branch", format!("{:?}", branch.iter().map(|t| t.to_string()).collect::<Vec<_>>()));
@@ -549,7 +549,7 @@ pub async fn run_refresh() -> anyhow::Result<()> {
     let upd = bl(|| bob_rgb.update_witnesses(bob_online.clone(), 0, vec![]))?;
     println!("[bob] update_witnesses: {upd:?}");
 
-    step("S2a.5: Bob sends on-chain to Carol; Carol attests F and accepts");
+    step("5. Bob sends on-chain to Carol; Carol attests F and accepts");
     let carol_recv = bl(|| carol_rgb.witness_receive(None, Assignment::Fungible(ISSUE_AMOUNT), now() + 86_400, vec![], 1))?;
     let carol_script = rgb_lib::utils::script_buf_from_recipient_id(carol_recv.recipient_id.clone())?
         .ok_or_else(|| anyhow!("not a witness recipient"))?;
@@ -565,18 +565,18 @@ pub async fn run_refresh() -> anyhow::Result<()> {
     let settled = receive_with_attestation("carol", &carol, &mut carol_rgb, &carol_online, &regtest, &fc, v, c1, &cons, &asset_id, &mut rec).await?;
     let pass = settled == ISSUE_AMOUNT;
     rec("PASS", pass.to_string());
-    println!("\nSTAGE 2 (a) REFRESH RESULT: {}", if pass { "PASS" } else { "FAIL" });
+    println!("\nREFRESH RESULT: {}", if pass { "PASS" } else { "FAIL" });
     ensure!(pass, "Carol balance check failed");
     Ok(())
 }
 
 /// Scenario (b): collaborative exit of a colored VTXO to an on-chain address, then on-chain send.
 pub async fn run_exit() -> anyhow::Result<()> {
-    let state = new_state("stage2-exit")?;
+    let state = new_state("collab-exit")?;
     let mut rec = summary_rec(state.clone());
     let regtest = Arc::new(Regtest::new());
 
-    step("S2b.1: clients, Alice boards, on-chain genesis + jump-in to V");
+    step("1. clients, Alice boards, on-chain genesis + jump-in to V");
     let (alice, _) = ark_client("alice", regtest.clone(), &state).await?;
     let (dave, _) = ark_client("dave", regtest.clone(), &state).await?;
     rec("arkd_version", alice.server_info().await?.version.clone());
@@ -589,7 +589,7 @@ pub async fn run_exit() -> anyhow::Result<()> {
     rec("asset_id", asset_id.clone());
     let contract_id = ContractId::from_str(&asset_id).map_err(|e| anyhow!("{e}"))?;
 
-    step("S2b.2: collaborative exit of V to Alice's rgb-lib address; T_f in the forfeit (V -> C:vout)");
+    step("2. collaborative exit of V to Alice's rgb-lib address; T_f in the forfeit (V -> C:vout)");
     let exit_addr = Address::from_str(&bl(|| alice_rgb.get_address())?)?.assume_checked();
     let (c, fc) = colored_batch("exit", &alice, &alice_rgb, contract_id, v, ISSUE_AMOUNT, BatchOp::Exit(exit_addr.clone(), Amount::from_sat(EXIT_SAT))).await?;
     let o = fc.target;
@@ -621,7 +621,7 @@ pub async fn run_exit() -> anyhow::Result<()> {
     let upd = bl(|| alice_rgb.update_witnesses(alice_online.clone(), 0, vec![]))?;
     println!("[alice] update_witnesses after exit: {upd:?}");
 
-    step("S2b.3: Alice spends O on-chain to Dave (opret at index 0)");
+    step("3. Alice spends O on-chain to Dave (opret at index 0)");
     let dave_recv = bl(|| dave_rgb.witness_receive(None, Assignment::Fungible(ISSUE_AMOUNT), now() + 86_400, vec![], 1))?;
     let dave_script = rgb_lib::utils::script_buf_from_recipient_id(dave_recv.recipient_id.clone())?
         .ok_or_else(|| anyhow!("not a witness recipient"))?;
@@ -673,18 +673,18 @@ pub async fn run_exit() -> anyhow::Result<()> {
         rec("proof_ad", format!("{} B, {} PSBTs, {} witnesses (consignment {} B)", st.bytes, st.n_psbts, st.n_witnesses, crate::proof::file_len(&cons)));
         rec("proof_ad_txids", format!("{:?}", crate::proof::psbt_txids(&crate::proof::proof_path(&cons))?));
     }
-    step("S2b.4: Dave attests F and accepts");
+    step("4. Dave attests F and accepts");
     let settled = receive_with_attestation("dave", &dave, &mut dave_rgb, &dave_online, &regtest, &fc, v, c, &cons, &asset_id, &mut rec).await?;
     let pass = settled == ISSUE_AMOUNT;
     rec("PASS", pass.to_string());
-    println!("\nSTAGE 2 (b) COLLABORATIVE EXIT RESULT: {}", if pass { "PASS" } else { "FAIL" });
+    println!("\nCOLLABORATIVE EXIT RESULT: {}", if pass { "PASS" } else { "FAIL" });
     ensure!(pass, "Dave balance check failed");
     Ok(())
 }
 
 /// Negative tests on the Ark side (uncolored VTXOs suffice: arkd only checks the tx shape).
 pub async fn run_neg() -> anyhow::Result<()> {
-    let state = new_state("stage2-neg")?;
+    let state = new_state("forfeit-negatives")?;
     let mut rec = summary_rec(state.clone());
     let regtest = Arc::new(Regtest::new());
     let (alice, _) = ark_client("alice", regtest.clone(), &state).await?;
@@ -850,49 +850,8 @@ pub async fn run_neg() -> anyhow::Result<()> {
         }
     }
     rec("PASS", pass.to_string());
-    println!("\nSTAGE 2 NEGATIVE TESTS RESULT: {}", if pass { "PASS" } else { "FAIL" });
+    println!("\nFORFEIT NEGATIVE TESTS RESULT: {}", if pass { "PASS" } else { "FAIL" });
     ensure!(pass, "negative tests failed");
     Ok(())
 }
 
-fn sig_summary(p: &Psbt) -> String {
-    p.inputs
-        .iter()
-        .map(|i| format!("[key_sig={} script_sigs={} tap_scripts={}]", i.tap_key_sig.is_some(), i.tap_script_sigs.len(), i.tap_scripts.len()))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Probe: which virtual txs (and signatures) does arkd's indexer return?
-pub async fn run_probe() -> anyhow::Result<()> {
-    let state = new_state("probe")?;
-    let regtest = Arc::new(Regtest::new());
-    let (alice, _) = ark_client("alice", regtest.clone(), &state).await?;
-    board("alice", &alice, "0.001").await?;
-    let v = first_vtxo(&alice).await?;
-    let nc = alice.network_client();
-    let chain = nc.get_vtxo_chain(Some(v), None, None, None).await.map_err(|e| anyhow!("{e:?}"))?;
-    println!("vtxo chain of {v}: {:?}", chain.chains.inner.iter().map(|c| (c.txid, format!("{:?}", c.tx_type), c.spends.clone())).collect::<Vec<_>>());
-    let (addr, _) = alice.get_offchain_address().await?;
-    let mut f: Option<Transaction> = None;
-    let c = {
-        let mut body = |_: &ForfeitHookContext<'_>, p: &mut Psbt| -> anyhow::Result<()> {
-            f = Some(p.unsigned_tx.clone());
-            Ok(())
-        };
-        hooked_batch("probe", &alice, v, BatchOp::Refresh(addr), &mut body, 3).await?
-    };
-    mine_until(&regtest, &c).await?;
-    let f = f.unwrap();
-    let ftxid = f.compute_txid();
-    let cids = nc.get_connector_txids(c.to_string()).await.map_err(|e| anyhow!("{e:?}"))?;
-    let mut ids = vec![ftxid.to_string(), v.txid.to_string()];
-    ids.extend(cids.clone());
-    let r = nc.get_virtual_txs(ids.clone(), None, None).await.map_err(|e| anyhow!("{e:?}"))?;
-    println!("asked {ids:?}");
-    for p in &r.txs {
-        println!("got {} inputs {:?} :: {}", p.unsigned_tx.compute_txid(), p.unsigned_tx.input.iter().map(|i| i.previous_output.to_string()).collect::<Vec<_>>(), sig_summary(p));
-    }
-    println!("forfeit {ftxid} connector input {}", f.input[0].previous_output);
-    Ok(())
-}

@@ -16,7 +16,7 @@ index 847c5002..0fb07696 100644
  
 -					allOutpoints = append(allOutpoints, Outpoint{Txid: txid, VOut: 0})
 +					allOutpoints = append(allOutpoints, Outpoint{
-+						Txid: txid, VOut: offchain.CheckpointOutputIndex(ptx.UnsignedTx), // [rgb-arkade patch 1]
++						Txid: txid, VOut: offchain.CheckpointOutputIndex(ptx.UnsignedTx), // [rgb-arkade: checkpoint-opret]
 +					})
  					chainTx.Spends = append(chainTx.Spends, txid)
  
@@ -29,7 +29,7 @@ index 959ab5ef..681f293e 100644
  			})
  		}
  
-+		// [rgb-arkade patch 1] optional user OP_RETURN in the checkpoint tx; the deterministic
++		// [rgb-arkade: checkpoint-opret] optional user OP_RETURN in the checkpoint tx; the deterministic
 +		// rebuild below reproduces it, so any other modification still fails the txid check.
 +		checkpointOpReturn, err := offchain.ExtractCheckpointOpReturn(checkpointPsbt.UnsignedTx)
 +		if err != nil {
@@ -52,7 +52,7 @@ index 959ab5ef..681f293e 100644
  				WithMetadata(errors.InputMetadata{Txid: txid, InputIndex: inIndex})
  		}
 -		checkpointOutputScript := checkpointTx.UnsignedTx.TxOut[0].PkScript
-+		cpVout := offchain.CheckpointOutputIndex(checkpointTx.UnsignedTx) // [rgb-arkade patch 1]
++		cpVout := offchain.CheckpointOutputIndex(checkpointTx.UnsignedTx) // [rgb-arkade: checkpoint-opret]
 +		checkpointOutputScript := checkpointTx.UnsignedTx.TxOut[cpVout].PkScript
  		if !bytes.Equal(checkpointOutputScript, expectedOutputScript) {
  			return errors.INVALID_PSBT_INPUT.New(
@@ -70,7 +70,7 @@ index 959ab5ef..681f293e 100644
  			})
  		}
  
-+		// [rgb-arkade patch 6] RGB recovery of a swept/expired VTXO: forfeit it anyway
++		// [rgb-arkade: recovery-forfeit] RGB recovery of a swept/expired VTXO: forfeit it anyway
 +		if message.RgbRecoveryForfeit && (vtxo.Swept || vtxo.IsExpired()) && !vtxo.IsNote() {
 +			vtxo.ForceForfeit = true
 +			log.Infof("rgb recovery: swept/expired vtxo %s will be forfeited", vtxo.Outpoint)
@@ -83,7 +83,7 @@ index 959ab5ef..681f293e 100644
  		}
  
  		for _, tx := range forfeitTxList {
-+			// [rgb-arkade patch 5] co-sign the VTXO input of the stored forfeit, so that its
++			// [rgb-arkade: forfeit-cosign] co-sign the VTXO input of the stored forfeit, so that its
 +			// owner can fetch (GetVirtualTxs) an operator-signed forfeit and prove off-line that
 +			// the operator accepted it (observed: the operator also adds its key-path signature
 +			// on the connector input; the connector *tx* itself stays unsigned).
@@ -100,7 +100,7 @@ index 959ab5ef..681f293e 100644
  			continue
  		}
 -		scripts = append(scripts, hex.EncodeToString(ptx.UnsignedTx.TxOut[0].PkScript))
-+		cpVout := offchain.CheckpointOutputIndex(ptx.UnsignedTx) // [rgb-arkade patch 1]
++		cpVout := offchain.CheckpointOutputIndex(ptx.UnsignedTx) // [rgb-arkade: checkpoint-opret]
 +		scripts = append(scripts, hex.EncodeToString(ptx.UnsignedTx.TxOut[cpVout].PkScript))
  	}
  	return scripts
@@ -109,7 +109,7 @@ index 959ab5ef..681f293e 100644
  		if err != nil || len(decoded) != 32 {
  			continue
  		}
-+		// [rgb-arkade patch 3] sub-dust VTXOs (OP_RETURN <32B>) store their 32-byte payload as
++		// [rgb-arkade: subdust-restart-fix] sub-dust VTXOs (OP_RETURN <32B>) store their 32-byte payload as
 +		// "pubkey"; an arbitrary payload (e.g. an RGB commitment) is not a valid x-only point and
 +		// its P2TR address makes the wallet reject the whole WatchScripts call at startup.
 +		if _, err := schnorr.ParsePubKey(decoded); err != nil {
@@ -122,7 +122,7 @@ index 959ab5ef..681f293e 100644
  
  		// handle non-extension OP_RETURN outputs
  		if len(out.PkScript) > 0 && out.PkScript[0] == txscript.OP_RETURN {
-+			// [rgb-arkade patch 2] 0-value OP_RETURN = data output (e.g. RGB opret commitment),
++			// [rgb-arkade: opret-data-output] 0-value OP_RETURN = data output (e.g. RGB opret commitment),
 +			// never a (sub-dust) VTXO; it still counts towards maxOpReturnOutputs.
 +			if script.IsDataOpReturn(out.Value, out.PkScript) {
 +				outputs = append(outputs, out)
@@ -148,7 +148,7 @@ index 28f74192..22823df4 100644
  ) error {
  	checkpointTxid := checkpointTx.UnsignedTx.TxHash()
 -	checkpointVOut := uint32(0)
-+	checkpointVOut := offchain.CheckpointOutputIndex(checkpointTx.UnsignedTx) // [rgb-arkade patch 1]
++	checkpointVOut := offchain.CheckpointOutputIndex(checkpointTx.UnsignedTx) // [rgb-arkade: checkpoint-opret]
  
  	if len(checkpointTx.Outputs) <= int(checkpointVOut) {
  		return fmt.Errorf("no outputs found in checkpoint tx")
@@ -169,7 +169,7 @@ index 44d842d9..6d6ed76c 100644
  			extension.IsExtension(out.PkScript) {
  			continue
  		}
-+		// [rgb-arkade patch 2] 0-value OP_RETURN data outputs are not VTXOs
++		// [rgb-arkade: opret-data-output] 0-value OP_RETURN data outputs are not VTXOs
 +		if script.IsDataOpReturn(out.Value, out.PkScript) {
 +			continue
 +		}
@@ -184,7 +184,7 @@ index d0301303..03783a99 100644
  	Depth              uint32   // chain depth: 0 for vtxos from batch, increments on each chain
  	MarkerIDs          []string // marker IDs for DAG traversal optimization (supports multiple parent markers)
  	Assets             []AssetDenomination
-+	// [rgb-arkade patch 6] set at intent registration for a swept/expired VTXO whose owner asked
++	// [rgb-arkade: recovery-forfeit] set at intent registration for a swept/expired VTXO whose owner asked
 +	// for an RGB recovery forfeit: the VTXO is then forfeited like a live one (connector + forfeit
 +	// tx co-signed by the operator) instead of being settled without a forfeit.
 +	ForceForfeit bool `json:"forceForfeit,omitempty"`
@@ -209,7 +209,7 @@ index 3309a75f..f9c69bd2 100644
  					continue
  				}
  
-+				// [rgb-arkade patch 2] 0-value OP_RETURN data outputs are not VTXOs
++				// [rgb-arkade: opret-data-output] 0-value OP_RETURN data outputs are not VTXOs
 +				if script.IsDataOpReturn(int64(out.Amount), out.PkScript) {
 +					continue
 +				}
@@ -226,7 +226,7 @@ index 7a1212a2..9fae8e62 100644
  		}
  
 -		rebuilt, err := tree.BuildForfeitTx(
-+		// [rgb-arkade patch 4] optional user OP_RETURN, reproduced by the deterministic rebuild
++		// [rgb-arkade: forfeit-opret] optional user OP_RETURN, reproduced by the deterministic rebuild
 +		// (the VTXO owner's SIGHASH_DEFAULT signature also commits to it)
 +		forfeitOpReturn, err := tree.ExtractForfeitOpReturn(tx.UnsignedTx)
 +		if err != nil {
@@ -251,8 +251,8 @@ index 650fb22b..c09449ff 100644
  	// if the outputs are not registered in the proof or all the outputs are onchain, this field is not required
  	// it is required only if one of the outputs is offchain
  	CosignersPublicKeys []string `json:"cosigners_public_keys"`
-+	// [rgb-arkade patch 6] RgbRecoveryForfeit asks the operator to require (and co-sign, see
-+	// patch 5) a forfeit tx for every swept/expired input, so that the forfeit can carry the RGB
++	// [rgb-arkade: recovery-forfeit] RgbRecoveryForfeit asks the operator to require (and co-sign, see
++	// forfeit-cosign change) a forfeit tx for every swept/expired input, so that the forfeit can carry the RGB
 +	// transition moving the asset of the swept VTXO into the new batch.
 +	RgbRecoveryForfeit bool `json:"rgb_recovery_forfeit,omitempty"`
  }
@@ -266,7 +266,7 @@ index 7e78534a..0544f73a 100644
  	// RevealedTapscripts is the whole taproot tree of the vtxo
  	// it must be revealed to the ark operator in order to verify the spent paths are valid
  	RevealedTapscripts []string
-+	// [rgb-arkade patch 1] CheckpointOpReturn is an optional 32-byte payload (e.g. an RGB opret
++	// [rgb-arkade: checkpoint-opret] CheckpointOpReturn is an optional 32-byte payload (e.g. an RGB opret
 +	// commitment) added to the checkpoint tx as a 0-value `OP_RETURN <32 bytes>` output. It is
 +	// placed FIRST (outputs: [OP_RETURN, checkpoint, anchor]) because RGB opret1st requires the
 +	// commitment to be the first DBC-compatible output (a P2TR output before it is rejected).
@@ -353,7 +353,7 @@ index 0f228b5e..78693a4b 100644
  }
  
 +// IsDataOpReturn reports whether an output is a 0-value OP_RETURN "data" output.
-+// [rgb-arkade patch 2] Such outputs (e.g. an RGB opret commitment) are never VTXOs: a sub-dust
++// [rgb-arkade: opret-data-output] Such outputs (e.g. an RGB opret commitment) are never VTXOs: a sub-dust
 +// VTXO must carry at least vtxoMinAmount (> 0), so a 0-value OP_RETURN is unambiguous.
 +func IsDataOpReturn(value int64, script []byte) bool {
 +	return value == 0 && len(script) > 0 && script[0] == txscript.OP_RETURN
@@ -381,7 +381,7 @@ index b5479dd2..fcebfa28 100644
 +// ForfeitOpReturnSize is the only accepted size of a forfeit OP_RETURN payload.
 +const ForfeitOpReturnSize = 32
 +
-+// [rgb-arkade patch 4] BuildForfeitTxWithOpReturn is BuildForfeitTx with an optional user
++// [rgb-arkade: forfeit-opret] BuildForfeitTxWithOpReturn is BuildForfeitTx with an optional user
 +// payload (e.g. an RGB opret commitment moving an asset from the forfeited VTXO to its
 +// replacement). With a payload the outputs are [OP_RETURN <32B> (0 sat), forfeit, anchor]: the
 +// OP_RETURN goes first because RGB opret1st requires it to precede any DBC-compatible (P2TR)

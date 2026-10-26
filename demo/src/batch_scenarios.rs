@@ -1,17 +1,17 @@
-//! Stage 6: closing the spike.
-//! `--stage6-multi`  (item 1 + item 4 negative): one batch with several users, two RGB assets, a
+//! Batch-level scenarios (rgb-lib Ark registry: tracked VTXOs, Ark balance, rollback, fraud proofs).
+//! `scenario multi-user`: one batch with several users, two RGB assets, a
 //!     BTC-only VTXO; off-chain send with BTC + asset change before it; every receiver validates
 //!     offline (arkd paused) and the rgb-lib Ark balances are checked.
-//! `--stage6-fail`   (item 2): a colored batch fails mid-way (another participant refuses to sign
+//! `scenario failed-batch`: a colored batch fails mid-way (another participant refuses to sign
 //!     its forfeit); the colored forfeit is rolled back in rgb-lib and the refresh is retried.
-//! `--stage6-fraud`  (item 5): operator + user collude (operator edits its own DB) and co-sign
+//! `scenario fraud`: operator + user collude (operator edits its own DB) and co-sign
 //!     two conflicting forfeits of the same VTXO in two batches; fraud proof + online detection.
-//! `--stage6-verify-recovery <stage5 run dir>` (item 4): re-verify a Stage 5 recovery proof with
+//! `scenario verify-recovery <sweep-recovery dir>`: re-verify a sweep-recovery proof with
 //!     the on-chain sweep check, and a not-swept forfeit declared as a recovery (must fail).
-use crate::offline2w::vtxo_info;
+use crate::long_offline::vtxo_info;
 use crate::proof::{ProofFile, add_vtxos, build_proof, import, mark_recovery, operators, proof_path};
-use crate::stage1::{rgb_hop, wait_vtxo};
-use crate::stage2::{BatchOp, ForfeitColoring, colored_batch, first_vtxo, hooked_batch, mine_until, new_state, summary_rec};
+use crate::offchain_transfer::{rgb_hop, wait_vtxo};
+use crate::forfeit::{BatchOp, ForfeitColoring, colored_batch, first_vtxo, hooked_batch, mine_until, new_state, summary_rec};
 use crate::{ArkClient, ISSUE_AMOUNT, ark_client, bl, board, onchain_genesis_jump_in, regtest, rgb_wallet, step};
 use anyhow::{anyhow, bail, ensure};
 use ark_core::send::SendReceiver;
@@ -93,12 +93,12 @@ async fn colored_user(name: &str, regtest: &Arc<Regtest>, state: &Path, rec: &mu
     Ok((c, w, on, v, cid))
 }
 
-// ------------------------------------------------------------------ item 1
+// --------------------------------------- multi-user
 pub async fn run_multi() -> anyhow::Result<()> {
-    let state = new_state("stage6-multi")?;
+    let state = new_state("multi-user")?;
     let mut rec = summary_rec(state.clone());
     let regtest = Arc::new(Regtest::new());
-    step("S6.1: Alice (asset A) and Bob (asset B) colored VTXOs, Carol BTC-only");
+    step("1. Alice (asset A) and Bob (asset B) colored VTXOs, Carol BTC-only");
     let (alice, arg, aon, va, cid_a) = colored_user("alice", &regtest, &state, &mut rec).await?;
     let (bob, brg, bon, vb, cid_b) = colored_user("bob", &regtest, &state, &mut rec).await?;
     let (carol, _) = ark_client("carol", regtest.clone(), &state).await?;
@@ -115,7 +115,7 @@ pub async fn run_multi() -> anyhow::Result<()> {
     rec("alice_ark_balance_A_start", bal_str(&ark_bal(&arg, &aon, &cid_a)?));
     rec("alice_db_balance_A_start", format!("{:?}", bl(|| arg.get_asset_balance(cid_a.to_string()))));
 
-    step("S6.2: off-chain send with change: Alice -> Dave 300 A + 20k sat; 700 A + BTC change to Alice");
+    step("2. off-chain send with change: Alice -> Dave 300 A + 20k sat; 700 A + BTC change to Alice");
     let (daddr, _) = dave.get_offchain_address().await?;
     let (achg, achg_v) = alice.get_offchain_address().await?;
     let hop = rgb_hop(
@@ -149,7 +149,7 @@ pub async fn run_multi() -> anyhow::Result<()> {
         ensure!(b.active == CHANGE_ASSET && b.in_flight == 0, "alice change balance");
     }
 
-    step("S6.3: ONE batch: Alice refresh (700 A), Dave refresh (300 A), Bob refresh -> Frank (1000 B), Carol BTC-only");
+    step("3. ONE batch: Alice refresh (700 A), Dave refresh (300 A), Bob refresh -> Frank (1000 B), Carol BTC-only");
     let (a_to, _) = alice.get_offchain_address().await?;
     let (d_to, _) = dave.get_offchain_address().await?;
     let (f_to, _) = frank.get_offchain_address().await?;
@@ -178,7 +178,7 @@ pub async fn run_multi() -> anyhow::Result<()> {
     rec("carol_btc_vtxos_after", format!("{tree_outs:?}"));
     wait_vtxo(&frank, fb.target, "frank").await?;
 
-    step("S6.4: proofs, then every receiver validates with arkd PAUSED");
+    step("4. proofs, then every receiver validates with arkd PAUSED");
     let pa = forfeit_proof(&alice, &regtest, &fa, &[], &state.join("alice_refresh.rgbc")).await?;
     let pd = forfeit_proof(&dave, &regtest, &fd, &[p_hop.clone()], &state.join("dave_refresh.rgbc")).await?;
     let pb = forfeit_proof(&bob, &regtest, &fb, &[], &state.join("bob_to_frank.rgbc")).await?;
@@ -187,7 +187,7 @@ pub async fn run_multi() -> anyhow::Result<()> {
     }
     {
         let _down = crate::proof::arkd_down(&mut rec, "receivers")?;
-        // item 4 negative: a normal (not swept) forfeit declared as a sweep recovery
+        // sweep-check negative: a normal (not swept) forfeit declared as a sweep recovery
         let neg = copy_with(&pb, "declared_recovery_not_swept", |f| f.recoveries = vec![fb.forfeit_tx.compute_txid().to_string()])?;
         let r = import(&erg, &eon, &neg, &ops);
         rec("neg_recovery_declared_for_unswept_vtxo", format!("{:?}", r.as_ref().map_err(|e| e.to_string())).chars().take(300).collect());
@@ -224,16 +224,16 @@ pub async fn run_multi() -> anyhow::Result<()> {
     let lt = bl(|| arg.list_ark_transfers()).map_err(|e| anyhow!("{e}"))?;
     rec("alice_ark_transfers", format!("{:?}", lt.iter().map(|t| format!("{} {} {:?} {}", &t.witness[..8], t.status, t.outputs, t.inputs.len())).collect::<Vec<_>>()));
     rec("PASS", "true".into());
-    println!("\nSTAGE 6 MULTI-USER BATCH RESULT: PASS");
+    println!("\nMULTI-USER BATCH RESULT: PASS");
     Ok(())
 }
 
-// ------------------------------------------------------------------ item 2
+// --------------------------------------- failed-batch
 pub async fn run_fail() -> anyhow::Result<()> {
-    let state = new_state("stage6-fail")?;
+    let state = new_state("failed-batch")?;
     let mut rec = summary_rec(state.clone());
     let regtest = Arc::new(Regtest::new());
-    step("S6F.1: Alice colored VTXO, Bob BTC VTXO, Gina receiver");
+    step("1. Alice colored VTXO, Bob BTC VTXO, Gina receiver");
     let (alice, arg, aon, va, cid) = colored_user("alice", &regtest, &state, &mut rec).await?;
     let (bob, _) = ark_client("bob", regtest.clone(), &state).await?;
     board("bob", &bob, "0.0005").await?;
@@ -243,7 +243,7 @@ pub async fn run_fail() -> anyhow::Result<()> {
     let ops = operators(&alice.server_info().await?);
     track("alice", &alice, &regtest, &arg, &aon, &ops, &state, &[va]).await?;
 
-    step("S6F.2: attempt 1 - same batch, Bob refuses to sign his forfeit");
+    step("2. attempt 1 - same batch, Bob refuses to sign his forfeit");
     let (g_to, _) = gina.get_offchain_address().await?;
     let (b_to, _) = bob.get_offchain_address().await?;
     let mut bob_body = |_: &ark_client::ForfeitHookContext<'_>, _: &mut Psbt| -> anyhow::Result<()> { bail!("bob goes offline before signing his forfeit") };
@@ -266,7 +266,7 @@ pub async fn run_fail() -> anyhow::Result<()> {
     let f1_known = alice.network_client().get_virtual_txs(vec![f1.clone()], None, None).await.map(|r| r.txs.len()).unwrap_or(0);
     rec("f1_known_to_arkd", f1_known.to_string());
 
-    step("S6F.3: roll back the never-signed colored forfeit in rgb-lib, retry (with retries)");
+    step("3. roll back the never-signed colored forfeit in rgb-lib, retry (with retries)");
     bl(|| arg.ark_rollback_transfer(aon.clone(), f1.clone())).map_err(|e| anyhow!("rollback: {e}"))?;
     let b = ark_bal(&arg, &aon, &cid)?;
     rec("alice_ark_balance_after_rollback", bal_str(&b));
@@ -299,7 +299,7 @@ pub async fn run_fail() -> anyhow::Result<()> {
     rec("v_indexer_after_retry", format!("spent={} spent_by={:?} settled_by={:?}", vi.is_spent, vi.spent_by, vi.settled_by));
     wait_vtxo(&gina, f2.target, "gina").await?;
 
-    step("S6F.4: Gina validates offline (arkd paused)");
+    step("4. Gina validates offline (arkd paused)");
     let cons = state.join("alice_to_gina.rgbc");
     let p = forfeit_proof(&alice, &regtest, &f2, &[], &cons).await?;
     {
@@ -321,14 +321,14 @@ pub async fn run_fail() -> anyhow::Result<()> {
     let lt = bl(|| arg.list_ark_transfers()).map_err(|e| anyhow!("{e}"))?;
     rec("alice_ark_transfers", format!("{:?}", lt.iter().map(|t| format!("{} {}", &t.witness[..8], t.status)).collect::<Vec<_>>()));
     rec("PASS", "true".into());
-    println!("\nSTAGE 6 FAILED-BATCH RETRY RESULT: PASS");
+    println!("\nFAILED-BATCH RETRY RESULT: PASS");
     Ok(())
 }
 
-// ------------------------------------------------------------------ item 5
+// --------------------------------------- fraud
 fn arkdb(mode: &str, sql: &str) -> anyhow::Result<String> {
     let o = std::process::Command::new("docker")
-        .args(["run", "--rm", "-v", "arkade-regtest_ark_datadir:/app/data", "-v", "/workspace/rgb-arkade/tools:/t", "busybox", "/t/arkdb", "/app/data/db/sqlite.db", mode, sql])
+        .args(["run", "--rm", "-v", "arkade-regtest_ark_datadir:/app/data", "-v", &format!("{}:/t", crate::paths::tools().display()), "busybox", "/t/arkdb", "/app/data/db/sqlite.db", mode, sql])
         .output()?;
     let s = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
     ensure!(o.status.success(), "arkdb: {s}");
@@ -336,10 +336,10 @@ fn arkdb(mode: &str, sql: &str) -> anyhow::Result<String> {
 }
 
 pub async fn run_fraud() -> anyhow::Result<()> {
-    let state = new_state("stage6-fraud")?;
+    let state = new_state("fraud")?;
     let mut rec = summary_rec(state.clone());
     let regtest = Arc::new(Regtest::new());
-    step("S6X.1: Alice colored VTXO V; receivers Dave and Erin; judge");
+    step("1. Alice colored VTXO V; receivers Dave and Erin; judge");
     let (alice, arg, aon, va, cid) = colored_user("alice", &regtest, &state, &mut rec).await?;
     let (dave, _) = ark_client("dave", regtest.clone(), &state).await?;
     let (erin, _) = ark_client("erin", regtest.clone(), &state).await?;
@@ -349,7 +349,7 @@ pub async fn run_fraud() -> anyhow::Result<()> {
     let ops = operators(&alice.server_info().await?);
     track("alice", &alice, &regtest, &arg, &aon, &ops, &state, &[va]).await?;
 
-    step("S6X.2: batch 1: V -> Dave (forfeit F1); Dave validates offline");
+    step("2. batch 1: V -> Dave (forfeit F1); Dave validates offline");
     let (d_to, _) = dave.get_offchain_address().await?;
     let (c1, f1) = colored_batch("alice->dave", &alice, &arg, cid, va, ISSUE_AMOUNT, BatchOp::Refresh(d_to)).await?;
     mine_until(&regtest, &c1).await?;
@@ -369,7 +369,7 @@ pub async fn run_fraud() -> anyhow::Result<()> {
     rec("v_indexer_after_batch1", format!("spent={} spent_by={:?}", vi.is_spent, vi.spent_by));
     ensure!(vi.spent_by.map(|t| t.to_string()) == Some(f1id.to_string()), "spent_by != F1");
 
-    step("S6X.3: honest arkd refuses a second forfeit of V");
+    step("3. honest arkd refuses a second forfeit of V");
     let (e_to, _) = erin.get_offchain_address().await?;
     let r = colored_batch("alice->erin-honest", &alice, &arg, cid, va, ISSUE_AMOUNT, BatchOp::Refresh(e_to.clone())).await;
     rec("honest_operator_second_forfeit", format!("{:?}", r.as_ref().map(|(c, _)| c.to_string()).map_err(|e| e.to_string())).chars().take(300).collect());
@@ -380,7 +380,7 @@ pub async fn run_fraud() -> anyhow::Result<()> {
         rec("honest_attempt_rolled_back", t.witness.clone());
     }
 
-    step("S6X.4: COLLUSION: the operator marks V unspent in its own DB; Alice signs a second refresh -> Erin");
+    step("4. COLLUSION: the operator marks V unspent in its own DB; Alice signs a second refresh -> Erin");
     let w = format!("txid='{}' AND vout={}", va.txid, va.vout);
     rec("arkdb_before", arkdb("query", &format!("SELECT spent, spent_by, settled_by FROM vtxo WHERE {w}"))?);
     rec("arkdb_edit", arkdb("exec", &format!("UPDATE vtxo SET spent=0, spent_by='', settled_by='' WHERE {w}"))?);
@@ -418,7 +418,7 @@ pub async fn run_fraud() -> anyhow::Result<()> {
     let cons2 = state.join("alice_to_erin.rgbc");
     let p2 = forfeit_proof(&alice, &regtest, &f2, &[], &cons2).await?;
 
-    step("S6X.5: Erin validates offline: NOT prevented (both receivers hold the 1000)");
+    step("5. Erin validates offline: NOT prevented (both receivers hold the 1000)");
     let fraud_path = state.join("fraud-proof.json");
     {
         let _d = crate::proof::arkd_down(&mut rec, "erin+judge")?;
@@ -430,7 +430,7 @@ pub async fn run_fraud() -> anyhow::Result<()> {
         rec("dave_ark_balance", bal_str(&bd));
         rec("erin_ark_balance", bal_str(&be));
 
-        step("S6X.6: fraud proof: two operator-co-signed forfeits of V (judge, chain only)");
+        step("6. fraud proof: two operator-co-signed forfeits of V (judge, chain only)");
         let load = |p: &Path| -> anyhow::Result<ArkProof> { Ok(serde_json::from_str(&std::fs::read_to_string(p)?)?) };
         let fp = ArkFraudProof { version: 1, vtxo: va.to_string(), forfeit_a: f1id.to_string(), proof_a: load(&p1)?, forfeit_b: f2id.to_string(), proof_b: load(&p2)? };
         std::fs::write(&fraud_path, serde_json::to_string_pretty(&fp)?)?;
@@ -463,7 +463,7 @@ pub async fn run_fraud() -> anyhow::Result<()> {
         }
     }
 
-    step("S6X.7: online detection via the indexer (spent_by)");
+    step("7. online detection via the indexer (spent_by)");
     let vi = vtxo_info(va).await.ok_or_else(|| anyhow!("indexer"))?;
     let sb = vi.spent_by.map(|t| t.to_string()).unwrap_or_default();
     let dave_alarm = sb != f1id.to_string();
@@ -473,13 +473,13 @@ pub async fn run_fraud() -> anyhow::Result<()> {
     rec("erin_online_check (holds F2)", if erin_alarm { "CONFLICT DETECTED".into() } else { "consistent (the later receiver cannot tell from spent_by alone)".into() });
     ensure!(dave_alarm, "online check did not detect the conflict");
     rec("PASS", "true".into());
-    println!("\nSTAGE 6 FRAUD RESULT: PASS (detected, not prevented)");
+    println!("\nFRAUD RESULT: PASS (detected, not prevented)");
     Ok(())
 }
 
-// ------------------------------------------------------------------ item 4 on Stage 5 data
+// ------------------------------------------------------------------ on-chain sweep check on sweep-recovery data
 pub async fn verify_recovery(dir: PathBuf) -> anyhow::Result<()> {
-    let out = dir.join("stage6-verify");
+    let out = dir.join("verify-recovery");
     std::fs::create_dir_all(&out)?;
     let mut rec = summary_rec(out.clone());
     let ret: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("return/summary.json"))?)?;
@@ -503,6 +503,6 @@ pub async fn verify_recovery(dir: PathBuf) -> anyhow::Result<()> {
     rec("neg_exit_forfeit_declared_as_recovery", format!("{:?}", r2.as_ref().map_err(|e| e.to_string())).chars().take(300).collect());
     ensure!(r.is_ok() && r2.is_err(), "sweep check");
     rec("PASS", "true".into());
-    println!("\nSTAGE 6 SWEEP-CHECK ON STAGE 5 DATA: PASS");
+    println!("\nSWEEP-CHECK ON RECOVERY DATA RESULT: PASS");
     Ok(())
 }

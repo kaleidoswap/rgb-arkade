@@ -1,6 +1,7 @@
-# ESTIMATES from the measured linear fits (state/bench-stage4/fits.json). Not measured.
-import json
-f=json.load(open('/workspace/rgb-arkade/state/bench-stage4/fits.json'))
+# ESTIMATES from the measured linear fits (<bench dir>/fits.json, written by analyze.py). Not measured.
+import json, os
+B=os.environ.get('BENCH_DIR', os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'state', 'bench'))
+f=json.load(open(os.path.join(B,'fits.json')))
 C0=5054            # consignment base (genesis + first transition), B
 ON=f['onchain_cons_raw'][1]; OFF=f['hops_cons_raw'][1]; MERGE=f['merge_cons_raw'][1]
 PJ=f['hops_proof_json'][1]; PB=f['hops_proof_bin'][1]; PBGZ=f['hops_proof_bin_gz'][1]

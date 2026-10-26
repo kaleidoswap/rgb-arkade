@@ -1,4 +1,4 @@
-//! Stage 3 / Part B: exit watchtower as a safety net against batch expiry.
+//! Scenario `exit-watchtower`: in-process exit watchtower as a safety net against batch expiry.
 //!
 //! Alice, Erin and Frank board into the same batch (short regtest expiry) and each puts an RGB
 //! asset on its VTXO (on-chain genesis + jump-in). The watchtower receives the (already fully
@@ -10,7 +10,7 @@
 //!  (2) Erin (control, not watched): the batch is swept; the asset is stuck.
 //!  (3) the watchtower cannot redirect the asset (tampered branch / spend of V with its key fail).
 //!  (4) Frank refreshes in time: the watchtower does nothing.
-use crate::stage2::{BatchOp, colored_batch, first_vtxo, mine_until, new_state, spend_exited, summary_rec};
+use crate::forfeit::{BatchOp, colored_batch, first_vtxo, mine_until, new_state, spend_exited, summary_rec};
 use crate::{ArkClient, ISSUE_AMOUNT, ark_client, bl, board, now, onchain_genesis_jump_in, regtest, rgb_wallet, step};
 use anyhow::{anyhow, bail, ensure};
 use ark_core::server::GetVtxosRequest;
@@ -218,11 +218,11 @@ pub(crate) async fn branch_of(client: &ArkClient, v: OutPoint) -> anyhow::Result
 }
 
 pub async fn run_watchtower() -> anyhow::Result<()> {
-    let state = new_state("stage3-watchtower")?;
+    let state = new_state("exit-watchtower")?;
     let mut rec = summary_rec(state.clone());
     let regtest = Arc::new(Regtest::new());
 
-    step("S3B.1: Alice, Erin, Frank board into the same batch (short expiry)");
+    step("1. Alice, Erin, Frank board into the same batch (short expiry)");
     let (alice, _) = ark_client("alice", regtest.clone(), &state).await?;
     let (erin, _) = ark_client("erin", regtest.clone(), &state).await?;
     let (frank, _) = ark_client("frank", regtest.clone(), &state).await?;
@@ -259,7 +259,7 @@ pub async fn run_watchtower() -> anyhow::Result<()> {
     let mut wt = Watchtower::new(&regtest).await?;
     rec("wt_fee_utxo", format!("{} {}", wt.utxo.0, wt.utxo.1));
 
-    step("S3B.2 (test 3a): watchtower tries to redirect a branch tx output to itself");
+    step("2. (test 3a): watchtower tries to redirect a branch tx output to itself");
     let mut tampered = branch_a[0].clone();
     let big = tampered.output.iter().position(|o| o.value.to_sat() > 1000).unwrap();
     tampered.output[big].script_pubkey = wt.spk.clone();
@@ -270,7 +270,7 @@ pub async fn run_watchtower() -> anyhow::Result<()> {
     rec("neg_wt_tampered_branch", s.chars().take(400).collect());
     ensure!(r.map(|v| v["package_msg"].as_str() != Some("success")).unwrap_or(true), "tampered branch accepted!");
 
-    step("S3B.3 (test 4): Frank refreshes in time (colored refresh, T_f in the forfeit)");
+    step("3. (test 4): Frank refreshes in time (colored refresh, T_f in the forfeit)");
     let (frank_addr, _) = frank.get_offchain_address().await?;
     let cid_f = ContractId::from_str(&asset_f).map_err(|e| anyhow!("{e}"))?;
     let (cf, fcf) = colored_batch("frank-refresh", &frank, &frank_rgb, cid_f, vf, ISSUE_AMOUNT, BatchOp::Refresh(frank_addr)).await?;
@@ -278,7 +278,7 @@ pub async fn run_watchtower() -> anyhow::Result<()> {
     rec("frank_refresh_forfeit", fcf.forfeit_tx.compute_txid().to_string());
     mine_until(&regtest, &cf).await?;
 
-    step("S3B.4: watchtower loop until Alice's branch is on-chain and Frank's decision is taken");
+    step("4. watchtower loop until Alice's branch is on-chain and Frank's decision is taken");
     let mut watches = vec![
         Watch { who: "alice", vtxo: va, branch: branch_a.clone(), st: St::Watching },
         Watch { who: "frank", vtxo: vf, branch: branch_f.clone(), st: St::Watching },
@@ -304,7 +304,7 @@ pub async fn run_watchtower() -> anyhow::Result<()> {
     rec("alice_V_onchain_confs", format!("{va_conf:?}"));
     ensure!(va_conf.is_some(), "Alice's V not on-chain");
 
-    step("S3B.5 (test 3b): watchtower tries to spend Alice's V with its own key");
+    step("5. (test 3b): watchtower tries to spend Alice's V with its own key");
     let steal = {
         let mut tx = Transaction {
             version: transaction::Version(2),
@@ -322,7 +322,7 @@ pub async fn run_watchtower() -> anyhow::Result<()> {
     rec("neg_wt_spend_V", s.clone());
     ensure!(!s.contains("\"allowed\":true"), "watchtower could spend V!");
 
-    step("S3B.6 (test 1): Alice spends V on-chain to Gina; Gina accepts");
+    step("6. (test 1): Alice spends V on-chain to Gina; Gina accepts");
     let (mut gina_rgb, gina_online) = bl(|| rgb_wallet("gina", &state))?;
     let recv = bl(|| gina_rgb.witness_receive(None, Assignment::Fungible(ISSUE_AMOUNT), now() + 86_400, vec![], 1))?;
     let gscript = rgb_lib::utils::script_buf_from_recipient_id(recv.recipient_id.clone())?.ok_or_else(|| anyhow!("not witness"))?;
@@ -362,7 +362,7 @@ pub async fn run_watchtower() -> anyhow::Result<()> {
     let test1 = settled == ISSUE_AMOUNT;
     rec("test1_PASS", test1.to_string());
 
-    step("S3B.7 (test 2, control): Erin was not watched -> batch sweep");
+    step("7. (test 2, control): Erin was not watched -> batch sweep");
     let mut swept = false;
     let end = now() + 1500;
     while now() < end {
@@ -408,7 +408,7 @@ pub async fn run_watchtower() -> anyhow::Result<()> {
 
     let pass = test1 && test2 && frank_untouched;
     rec("PASS", pass.to_string());
-    println!("\nSTAGE 3 (B) WATCHTOWER RESULT: {}", if pass { "PASS" } else { "FAIL" });
+    println!("\nEXIT WATCHTOWER RESULT: {}", if pass { "PASS" } else { "FAIL" });
     ensure!(pass, "watchtower tests failed");
     Ok(())
 }

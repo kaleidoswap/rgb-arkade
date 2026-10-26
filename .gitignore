@@ -1,6 +1,6 @@
 target/
-vendor/
-arkade-regtest/
+vendor
+arkade-regtest
 arkd-image/arkd
 tools/arkdb
 state/
@@ -10,3 +10,4 @@ watchtowerd.prev-*/
 *.rgbc
 *.arkproof.json
 .env
+__pycache__/
