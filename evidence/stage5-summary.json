@@ -1,0 +1,60 @@
+{
+ "arkd": "v0.9.15-rgb4 (patch 6: rgb_recovery_forfeit), image arkd:rgb; previous arkd:rgb-stage4",
+ "dev_run": {
+  "dir": "state/run-1792996135-stage5-recovery",
+  "summary": {
+   "offline_for": "709 s",
+   "health_on_return": "LOST (batch swept: seal can never be closed; RGB balance is stale)",
+   "v_indexer_before": "swept=true spent=false expires_at=1792996654 spent_by=None",
+   "v_settleable_as_recoverable": "1 input(s), is_swept flag sent: false",
+   "neg_non_owner_intent": "Err(\"ark_grpc::Error(Request, Status { code: InvalidArgument, message: \\\"INVALID_INTENT_PROOF (23): invalid intent proof: invalid intent proof: invalid sig 0 for input 0 with prevout 7e61e8c1572ede25c9824196f008abb3c89d009cd253498eee3c2666b3026503:0\\\", details: b\\\"\\\\x08\\\\x03\\\\x12\\\\xb0\\\\x01INVALID_IN",
+   "recovery_commitment": "0966f28d4c95503e3e49c73c80d85735632531236e227a289621fabf07a38618",
+   "recovery_forfeit": "d241138b8864a4364e77ecd78ec3c8ae88344fe2d729e104b3da68913e6ef75d",
+   "recovered_vtxo": "a9499dd419b7336d4ffe2c3ac85401b3482b94d1392a413b56e16c1499a6765f:0",
+   "v_indexer_after": "swept=true spent=true spent_by=Some(d241138b8864a4364e77ecd78ec3c8ae88344fe2d729e104b3da68913e6ef75d) settled_by=Some(0966f28d4c95503e3e49c73c80d85735632531236e227a289621fabf07a38618)",
+   "new_vtxo_health": "HEALTHY (604669 s = 8267.0 days to expiry)",
+   "neg_second_recovery_intent": "Err(\"ark_grpc::Error(Request, Status { code: InvalidArgument, message: \\\"VTXO_ALREADY_SPENT (6): input 4a0fd77f93b28572d2fe1e441fad80e518bc73cfa6495947cd884a2003446252:0 already spent\\\", details: b\\\"\\\\x08\\\\x03\\\\x12nVTXO_ALREADY_SPENT (6): input 4a0fd77f93b28572d2fe1e441fad80e518bc73cfa6495947cd884a2",
+   "recovery_proof": "1825 B, 3 PSBTs",
+   "alice_balance_after_recovery": "Ok(Balance { settled: 1000, future: 1000, spendable: 1000 })",
+   "exit_commitment": "a41876fc3e45a8f646091562f8d03e92749ecca890500ed43a60f5a957b5a97c",
+   "exit_forfeit": "ea1f55fdb9aa48e10837112464a3cc22aa31b189342c3decac1cf0528e5991f6",
+   "alice_to_dave_txid": "fb5e07d6fd66d670b67f356ad3729f5d65dae0b41888fbbe95c2288686178a05",
+   "proof_ad": "3613 B, 6 PSBTs, txids [\"4a0fd77f93b28572d2fe1e441fad80e518bc73cfa6495947cd884a2003446252\", \"a9499dd419b7336d4ffe2c3ac85401b3482b94d1392a413b56e16c1499a6765f\", \"c232079dda2749acac1c7910d3ab2aa6f9a896b2deb4a9d528362c63f4f10d60\", \"d241138b8864a4364e77ecd78ec3c8ae88344fe2d729e104b3da68913e6ef75d\", \"ee3d5e9dd7afe61300beb2a2b7f42a06ffc6ee4eb5f611c74deab73f4c56870d\", \"ea1f55fdb9aa48e10837112464a3cc22aa31b189342c3decac1cf0528e5991f6\"]",
+   "dave_arkd_reachable_during_validation": "false",
+   "neg_proof_dave_missing_branch_tx_4a0fd77f": "rejected: Internal error: Ark proof rejected: tx 4a0fd77f93b28572d2fe1e441fad80e518bc73cfa6495947cd884a2003446252 is neither in the proof nor mined (missing branch tx or unmined commitment tx)",
+   "neg_proof_dave_tampered_branch_signature": "rejected: Internal error: Ark proof rejected: 4a0fd77f93b28572d2fe1e441fad80e518bc73cfa6495947cd884a2003446252 input 0 key-path: invalid signature: signature failed verification",
+   "neg_proof_dave_tampered_branch_output": "rejected: Internal error: Ark proof rejected: tx 4a0fd77f93b28572d2fe1e441fad80e518bc73cfa6495947cd884a2003446252 is neither in the proof nor mined (missing branch tx or unmined commitment tx)",
+   "neg_proof_dave_forfeit_connector_missing": "rejected: Internal error: Ark proof rejected: tx c232079dda2749acac1c7910d3ab2aa6f9a896b2deb4a9d528362c63f4f10d60 is neither in the proof nor mined (missing branch tx or unmined commitment tx)",
+   "neg_proof_dave_forfeit_connector_fabricated": "rejected: Internal error: Ark proof rejected: tx c232079dda2749acac1c7910d3ab2aa6f9a896b2deb4a9d528362c63f4f10d60 is neither in the proof nor mined (missing branch tx or unmined commitment tx)",
+   "neg_proof_dave_forfeit_without_operator_sig": "rejected: Internal error: Ark proof rejected: d241138b8864a4364e77ecd78ec3c8ae88344fe2d729e104b3da68913e6ef75d input 1: no fully signed tapleaf containing the operator key",
+   "neg_proof_dave_forfeit_psbt_missing": "rejected: Internal error: Ark proof rejected: tx d241138b8864a4364e77ecd78ec3c8ae88344fe2d729e104b3da68913e6ef75d missing from the proof",
+   "neg_proof_dave_wrong_operator_key": "true",
+   "neg_operator_rewrites_commitment": "Err(\"Internal error: Ark proof rejected: 69148c9f0b7dffa1825a6684b209e87d6efc3c129edf6fe2a6e28d0119500747 input 0 key-path: invalid signature: signature failed verification\")",
+   "neg_operator_only_signature": "Err(\"Internal error: Ark proof rejected: d241138b8864a4364e77ecd78ec3c8ae88344fe2d729e104b3da68913e6ef75d input 1: no fully signed tapleaf containing the operator key\")",
+   "dave_proof_registered": "[\"d241138b8864a4364e77ecd78ec3c8ae88344fe2d729e104b3da68913e6ef75d\", \"ea1f55fdb9aa48e10837112464a3cc22aa31b189342c3decac1cf0528e5991f6\"]",
+   "dave_balance": "Balance { settled: 1000, future: 1000, spendable: 1000 }",
+   "PASS": "true"
+  }
+ },
+ "official_run": {
+  "dir": "state/run-1792996944-stage5-recovery",
+  "offline_s_target": 5400,
+  "status": "PASS",
+  "offline_s_actual": 5570,
+  "recovery_commitment": "be09965e89ba8982af7367f6436f97309ba4b42ad3515c32c0fdbe307080f727",
+  "recovery_forfeit": "ad0e16d0ff5d02c392eec3edd54947c1c48d5b3bcaa6b962202b55a604731525",
+  "recovered_vtxo": "d6d3d604b96d9bdc41ab38d85b36b583f35d8042674b850fd759ea4f95581486:0",
+  "exit_commitment": "0bcec52a578e3a68d126623e4114eea57b7cbf28ce6290493ab20637318bd7ca",
+  "exit_forfeit": "6a63d4d39c42a49975106af2ed94913ca765d8912180d152a56b408365de1a95",
+  "alice_to_dave": "16afc92b8a74dcb282c5820820b0d534788df6994cafadf006271fa717ce7461",
+  "dave_settled": 1000,
+  "dave_arkd_reachable": false
+ },
+ "regressions": "logs/stage5-regress-progress.log",
+ "regression_stage4_offline2w": {
+  "status": "PASS",
+  "dir": "state/run-1793002591-stage4-offline2w",
+  "alice_to_dave": "30bc097fe0590516b18dcafc019d8404e81deec8cdee209e66fdcfda4252e4fd",
+  "erin_to_gina": "99150e5dd954e35d812163c494c878842f147842dcc39d94481054c428c79f03"
+ }
+}

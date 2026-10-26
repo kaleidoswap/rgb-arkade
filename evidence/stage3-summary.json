@@ -1,0 +1,159 @@
+{
+  "stage": 3,
+  "arkd_image": "arkd:rgb v0.9.15-rgb3 (patches 1-5)",
+  "times": "CET (UTC+1)",
+  "partA_offline_proof": {
+    "stage1": {
+      "log": "logs/stage3-stage1-offline-run2.log",
+      "state": "state/run-1792968526-stage1",
+      "time": "25 Oct 23:48-23:58",
+      "result": "PASS",
+      "dave_settled": 700,
+      "proof_bytes": {
+        "A->B": 2932,
+        "B->C": 5432,
+        "C->D": 39
+      },
+      "carol_to_dave": "174e40a5194ee118de68f7b9b88ba4953c51131967ae2f0309e8cc27bb6c48b6"
+    },
+    "stage2a_refresh": {
+      "log": "logs/stage3-stage2-refresh-offline-run3.log",
+      "state": "state/run-1792969212-stage2-refresh",
+      "time": "26 Oct 00:00-00:09",
+      "result": "PASS",
+      "carol_settled": 1000,
+      "proof_bytes": {
+        "A->B": 4720,
+        "B->C": 1825
+      },
+      "C1": "87b604da3d35a1acc9cda7a525077287502db4ab548d398bab3f56e3995ccb2c",
+      "F": "7022c754825f9887a65c45015812da5fec8b0a3ee7abcb56d1d677d9bbb52bec",
+      "bob_to_carol": "572d33e522a29008bcb2140b105a50099534cc312c208bd59c72771d16085342"
+    },
+    "stage2b_exit": {
+      "log": "logs/stage3-stage2-exit-offline-run2.log",
+      "state": "state/run-1792969857-stage2-exit",
+      "time": "26 Oct 00:10-00:11",
+      "result": "PASS",
+      "dave_settled": 1000,
+      "proof_bytes": {
+        "A->D": 1825
+      },
+      "C": "e614b677edb029cda331ab4eb4a25cd388830cca9bf548ede348464a7a8adadc",
+      "F": "00514b7cfbd171e64e3978697924bda64c7f821d569aa447ff0f6870c2f41bc9",
+      "alice_to_dave": "e47e036f9204e93ac93cfdc2003c596a8b8e1c586ab9cd058a3d005361e7d058"
+    },
+    "arkd_reachable_during_validation": false,
+    "negatives_rejected": [
+      "missing_branch_tx",
+      "tampered_branch_signature",
+      "tampered_branch_output",
+      "forfeit_connector_missing",
+      "forfeit_connector_fabricated",
+      "forfeit_without_operator_sig",
+      "forfeit_psbt_missing",
+      "wrong_operator_key",
+      "unmined_commitment"
+    ],
+    "failed_attempts": {
+      "stage1-run1": "demo bug (asset balance query)",
+      "stage2-refresh-run1": "demo bug (balance query)",
+      "stage2-refresh-run2": "tx_confirmations counted mempool as mined; verifier correctly rejected",
+      "stage2-exit-run1": "GetVirtualTxs on commitment tx returns non-PSBT; builder fixed"
+    }
+  },
+  "partB_watchtower": {
+    "log": "logs/stage3-watchtower-run2.log",
+    "state": "state/run-1792970449-stage3-watchtower",
+    "time": "26 Oct 00:20-00:50",
+    "result": "PASS",
+    "expiry_s": 1024,
+    "threshold_s": 420,
+    "test1_alice": {
+      "result": "PASS",
+      "branch": [
+        "e0130bc9a5c64cbfafa95e9a11e207f5bca6c36773b3fec62a6c1762854016a3",
+        "6ff43d277439d0899b1968db2945d95833d9678b8c72c37393a7c52b2498c5d6"
+      ],
+      "cpfp": [
+        "01575ecfecc5b1c230a41f708bd450fc3397588110e34975638d77e5aad046e1",
+        "5894303b90a5b8d24076046df2efe07177e0891e90c4dcf834bfb7af5ac5b94d"
+      ],
+      "alice_to_gina": "b44ef81f3c12680f16272d4cf8a87686b3e4cc163dbd8e9a3604209099ec9aab",
+      "gina_settled": 1000
+    },
+    "test2_erin_control": {
+      "result": "PASS (asset stuck)",
+      "sweep_tx": "6886cca82d871a4a9be4ef01fe1fa6ef8a3e0d40f5effa017532a14e7ef200c9",
+      "leaf_tx_after_sweep": "missing-inputs",
+      "rgb_reports": "Balance{settled:1000,future:1000,spendable:1000} (stale)",
+      "btc_recovered": "5c217119c89ba7a248f1275a5428efacec815c8d06cd6a1d69c458ed2f6988a6:0 100000 sat",
+      "colored_refresh": "forfeit hook never ran"
+    },
+    "test3_no_theft": {
+      "result": "PASS",
+      "tampered_branch": "Invalid Schnorr signature",
+      "spend_V_with_wt_key": "Invalid Schnorr signature"
+    },
+    "test4_frank_refreshed": {
+      "result": "PASS",
+      "refresh_commitment": "9e26661a33475c21f3f1f43f7a92e9f673ff3b418106c8280035083c5d474490",
+      "forfeit": "5ffa5093d1ed6c35b87c35b932977e670779028a7b6d00d8cb43658be0e26ce0",
+      "branch_broadcast": false
+    },
+    "fees_sat": {
+      "root": {
+        "parent_vsize": 167,
+        "child_vsize": 151,
+        "fee": 640
+      },
+      "leaf": {
+        "parent_vsize": 124,
+        "child_vsize": 151,
+        "fee": 554
+      },
+      "total": 1194,
+      "feerate_sat_vb": 2
+    }
+  },
+  "regressions_rgb3": {
+    "Stage 1 (`--stage1`)": {
+      "time": "01:10\u201301:20",
+      "evidence": "`logs/stage3-regress-stage1.log`, `state/run-1792973439-stage1/`",
+      "txids": "Carol\u2192Dave `abf54ea4e9772cedcfb857249d4799ab4213ac3c83c53e5e2323b6d5e088c0ed`",
+      "result": "Dave `settled: 700`, **PASS**"
+    },
+    "Stage 0 Variant A": {
+      "time": "00:49\u201300:58",
+      "evidence": "`logs/stage3-regress-stage0-variantA.log`, `state/run-1792972177/`",
+      "txids": "Bob\u2192Carol `b0bc2aa6bd70409fbb875271cdf7a56a32273e639c4700f8f9d456cdb61946cc`",
+      "result": "Carol `settled: 1000`, **PASS**"
+    },
+    "Stage 0 Variant B": {
+      "time": "00:58\u201301:08",
+      "evidence": "`logs/stage3-regress-stage0-variantB.log`, `state/run-1792972727-onchain-genesis/`",
+      "txids": "Bob\u2192Carol `84a6952a8478895d02bcccb878fd664ed287c2c44e6ec409e6e5d7d259289f7b`",
+      "result": "Carol `settled: 1000`, **PASS**"
+    },
+    "Stage 2 (a) refresh": {
+      "time": "00:49\u201300:59",
+      "evidence": "`logs/stage3-regress-stage2-refresh.log`, `state/run-1792972168-stage2-refresh/`",
+      "txids": "C1 `afdf9665\u20265021`, Bob\u2192Carol `b5cf9c253213ae38dd39e84c111fa5ead237e7efd7a357175e50fcd9c5697402`",
+      "result": "Carol `settled: 1000`, **PASS**"
+    },
+    "Stage 2 (b) collaborative exit": {
+      "time": "00:59\u201301:00",
+      "evidence": "`logs/stage3-regress-stage2-exit.log`, `state/run-1792972747-stage2-exit/`",
+      "txids": "C `073620dc\u2026e6ba`, Alice\u2192Dave `795798dc4636b6e857dbbb60afc28a3805e4571ceecc4a025f328ba582fa6b60`",
+      "result": "Dave `settled: 1000`, **PASS**"
+    },
+    "Stage 2 negatives": {
+      "time": "01:08\u201301:10",
+      "evidence": "`logs/stage3-regress-stage2-neg.log`, `state/run-1792973296-stage2-neg/`",
+      "txids": "\u2013",
+      "result": "all **PASS**"
+    },
+    "note": "first stage1 attempt failed at electrum connect under concurrent start; rerun alone PASS"
+  },
+  "patches": "patches/{arkd,rust-sdk,rgb-lib}.patch cumulative; patches/arkd-patch5-forfeit-cosign.patch; patches/stage2/ = Stage 2 versions; rust-sdk unchanged in Stage 3"
+}

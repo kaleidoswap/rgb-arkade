@@ -1,0 +1,31 @@
+{
+  "stage2_refresh": {
+    "run": "run-1792963200-stage2-refresh",
+    "PASS": "true"
+  },
+  "stage2_exit": {
+    "run": "run-1792963155-stage2-exit",
+    "PASS": "true"
+  },
+  "stage2_neg": {
+    "run": "run-1792963787-stage2-neg",
+    "PASS": "true"
+  },
+  "stage2_exit_first_attempt_waiting_safe_height": {
+    "run": "run-1792963052-stage2-exit",
+    "PASS": "false"
+  },
+  "regress_stage1": {
+    "run": "run-1792963932-stage1",
+    "PASS": "true"
+  },
+  "regress_stage0_A": {
+    "run": "run-1792964499",
+    "PASS": "true"
+  },
+  "regress_stage0_B": {
+    "run": "run-1792965049-onchain-genesis",
+    "PASS": "true"
+  },
+  "arkd_version": "v0.9.15-rgb2"
+}

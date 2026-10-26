@@ -1,0 +1,1537 @@
+diff --git a/src/ark_proof.rs b/src/ark_proof.rs
+new file mode 100644
+index 0000000..7ffc030
+--- /dev/null
++++ b/src/ark_proof.rs
+@@ -0,0 +1,579 @@
++//! [rgb-arkade patch] Self-contained Ark proofs for unmined RGB witnesses.
++//!
++//! A proof (`*.arkproof.json`, sidecar of a consignment) lists the RGB witness txids that are
++//! Arkade virtual txs (checkpoint, ark tx, forfeit) and the PSBTs of every virtual tx needed to
++//! link them to a *mined* tx (normally a batch commitment tx). Verification uses only the proof
++//! and the blockchain resolver, never arkd:
++//! - each bundled PSBT's txid is recomputed; every input spends either a bundled tx (checked
++//!   recursively) or a mined tx (resolver: `Mined`); the referenced output must exist;
++//! - signatures: key-path `tap_key_sig` (batch-tree nodes, MuSig of cosigners + operator) and
++//!   script-path `tap_script_sigs` (checkpoint, ark tx, forfeit VTXO input) are verified with
++//!   BIP-341 sighashes over the prevouts taken from the parent txs (never from PSBT fields). A
++//!   script-path input needs a leaf whose control block commits to the prevout key and in which
++//!   *every* `CHECKSIG(VERIFY)` key has a valid signature. Sighash must be DEFAULT or ALL;
++//! - a listed witness with a fully signed operator leaf on one input (a forfeit: VTXO input
++//!   co-signed by user + operator, arkd patch 5) may spend an unsigned, operator-only branch on
++//!   its other input (the connector branch), which is checked by txid linkage only: the signed
++//!   input's SIGHASH_DEFAULT commits to the connector outpoint, so the operator's co-signature
++//!   binds the forfeit to that connector of the mined commitment tx;
++//! - in strict mode the satisfied tapleaf must contain a pinned operator key (signer/forfeit key), so a
++//!   user-only leaf (e.g. the CSV exit leaf) cannot fake an operator-acknowledged spend;
++//! - every listed witness has exactly one OP_RETURN: index 0, 0 sat, `OP_RETURN PUSH32`.
++//!
++//! The anchor of a witness is its highest mined ancestor (the most recent batch commitment).
++use super::*;
++
++use bdk_wallet::bitcoin::{
++    OutPoint as ProofOutPoint, Psbt as ProofPsbt, ScriptBuf as ProofScript, Transaction as ProofTx, TxOut as ProofTxOut,
++    Txid as ProofTxid,
++    key::{Secp256k1 as ProofSecp, XOnlyPublicKey as ProofXOnly},
++    opcodes::all::{OP_CHECKSIG, OP_CHECKSIGVERIFY},
++    script::Instruction,
++    secp256k1::{Message as ProofMessage, Verification},
++    sighash::{Prevouts, SighashCache, TapSighashType},
++    taproot::TapLeafHash,
++};
++
++/// Sidecar file suffix appended to the consignment path.
++pub const ARK_PROOF_SUFFIX: &str = ".arkproof.json";
++
++/// Self-contained Ark proof bundle (JSON sidecar of a consignment).
++#[derive(Debug, Clone, Serialize, Deserialize)]
++pub struct ArkProof {
++    /// Format version (1).
++    pub version: u8,
++    /// RGB witness txids that are unmined Arkade virtual txs.
++    pub witnesses: Vec<String>,
++    /// Base64 PSBTs of the witnesses and of every unmined ancestor down to a mined tx.
++    pub psbts: Vec<String>,
++    /// [Stage 6] Witnesses (forfeit txids) claimed to be *sweep recoveries*: accepted only if the
++    /// chain shows that the forfeited VTXO's branch was swept (a mined ancestor output spent by
++    /// a tx that is not the next branch tx), so the VTXO can never be published on-chain.
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    pub recoveries: Vec<String>,
++    /// [Stage 6] VTXO outpoints (`txid:vout`) whose branch PSBTs are bundled, so that the
++    /// receiver can track their liveness (active / swept -> to recover / unrolled) from the chain.
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    pub vtxos: Vec<String>,
++}
++
++/// [Stage 6] A mined outpoint a VTXO's branch hangs from, and the bundled tx that spends it.
++#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
++pub struct ArkAnchor {
++    /// Mined outpoint (`txid:vout`), normally a batch output of a commitment tx.
++    pub outpoint: String,
++    /// Its script (hex), for the indexer lookup.
++    pub script_pubkey: String,
++    /// The branch tx that spends it (if the chain shows another spender, the branch was swept).
++    pub child: String,
++}
++
++/// [Stage 6] Chain lookup: spender of a mined outpoint -> (spending txid, confirmed).
++pub(crate) type SpenderFn<'a> =
++    &'a dyn Fn(ProofOutPoint, &ProofScript) -> Result<Option<(ProofTxid, bool)>, String>;
++
++/// [Stage 6] Liveness of a colored VTXO, derived from the chain only.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++pub enum ArkVtxoStatus {
++    /// Branch not swept, VTXO not on-chain: spendable off-chain.
++    Active,
++    /// The VTXO tx is mined (unilateral exit): spend it on-chain.
++    Unrolled,
++    /// The batch was swept: the RGB state is frozen until a recovery forfeit moves it.
++    ToRecover {
++        /// The tx that swept the branch.
++        sweep_txid: String,
++    },
++    /// This wallet already moved the state (pending until the batch/witness settles).
++    Spent {
++        /// The witness that consumed it.
++        by: String,
++    },
++}
++
++/// [Stage 6] Ark-aware balance of one asset: state on tracked VTXOs, by liveness.
++#[derive(Debug, Clone, Default, Serialize, Deserialize)]
++pub struct ArkAssetBalance {
++    /// On active VTXOs (spendable off-chain).
++    pub active: u64,
++    /// On swept VTXOs: frozen until recovered.
++    pub to_recover: u64,
++    /// On unrolled (mined) VTXOs.
++    pub unrolled: u64,
++    /// On VTXOs already spent by this wallet (in flight).
++    pub in_flight: u64,
++    /// Per VTXO: (outpoint, amount, status).
++    pub vtxos: Vec<(String, u64, ArkVtxoStatus)>,
++}
++
++/// [Stage 6] A tracked VTXO (wallet dir `ark_vtxos.json`).
++#[derive(Debug, Clone, Serialize, Deserialize)]
++pub struct ArkVtxoRecord {
++    /// `txid:vout`.
++    pub outpoint: String,
++    /// Mined outpoints the branch hangs from.
++    pub anchors: Vec<ArkAnchor>,
++    /// Bundled branch txids.
++    pub branch: Vec<String>,
++    /// Witness of this wallet that consumed the state on it.
++    pub spent_by: Option<String>,
++    /// Owned by this wallet (received or declared): only owned VTXOs count in the balance.
++    #[serde(default)]
++    pub owned: bool,
++}
++
++/// [Stage 6] A custom-colored (Arkade) transfer made by this wallet (`ark_transfers.json`).
++#[derive(Debug, Clone, Serialize, Deserialize)]
++pub struct ArkTransferRecord {
++    /// Witness txid (checkpoint, ark tx, forfeit or on-chain tx).
++    pub witness: String,
++    /// Asset (contract) ID.
++    pub asset_id: String,
++    /// Consumed outpoints.
++    pub inputs: Vec<String>,
++    /// (seal, amount): `txid:vout` for explicit seals, `witness:vout` for witness vouts.
++    pub outputs: Vec<(String, u64)>,
++    /// Unix time.
++    pub created_at: u64,
++    /// `pending`, `attested` (verified Ark proof imported) or `rolled_back`.
++    pub status: String,
++}
++
++/// [Stage 6] Full verification result.
++pub(crate) struct ArkProofVerified {
++    pub witnesses: VerifiedArkWitnesses,
++    /// vtxo outpoint -> (anchors, branch txids)
++    pub vtxos: HashMap<String, (Vec<ArkAnchor>, Vec<String>)>,
++    /// (recovery forfeit txid, sweep txid)
++    pub recoveries: Vec<(String, String)>,
++}
++
++/// [Stage 6] Two operator-co-signed forfeits spending the same VTXO (publishable evidence).
++#[derive(Debug, Clone, Serialize, Deserialize)]
++pub struct ArkFraudProof {
++    /// Format version (1).
++    pub version: u8,
++    /// The double-forfeited VTXO (`txid:vout`).
++    pub vtxo: String,
++    /// First forfeit txid and its self-contained proof.
++    pub forfeit_a: String,
++    /// Proof bundle of the first forfeit.
++    pub proof_a: ArkProof,
++    /// Second forfeit txid.
++    pub forfeit_b: String,
++    /// Proof bundle of the second forfeit.
++    pub proof_b: ArkProof,
++}
++
++/// [Stage 6] What a valid fraud proof establishes.
++#[derive(Debug, Clone, Serialize, Deserialize)]
++pub struct ArkFraudEvidence {
++    /// The VTXO spent twice.
++    pub vtxo: String,
++    /// The two conflicting forfeit txids.
++    pub forfeits: [String; 2],
++    /// Their anchors (mined commitment txs).
++    pub anchors: [String; 2],
++    /// Operator key(s) whose signature appears on both conflicting spends.
++    pub operator_keys: Vec<String>,
++}
++
++/// Result: witness txid -> (unsigned tx, anchor txid).
++pub(crate) type VerifiedArkWitnesses = HashMap<String, (BdkTransaction, String)>;
++
++#[derive(Clone, Copy, PartialEq, Eq, Hash)]
++enum Mode {
++    Strict,
++    LinkageOnly,
++}
++
++struct Verifier<'a, R: ResolveWitness> {
++    bundle: HashMap<ProofTxid, ProofPsbt>,
++    witnesses: HashSet<ProofTxid>,
++    resolver: &'a R,
++    operators: Vec<ProofXOnly>,
++    // txid -> (anchor txid, anchor height)
++    memo: HashMap<(ProofTxid, Mode), (ProofTxid, u32)>,
++}
++
++fn checksig_pubkeys(script: &ProofScript) -> Vec<ProofXOnly> {
++    let ins: Vec<_> = script.instructions().filter_map(|i| i.ok()).collect();
++    let mut out = vec![];
++    for w in ins.windows(2) {
++        if let (Instruction::PushBytes(b), Instruction::Op(op)) = (&w[0], &w[1]) {
++            if (*op == OP_CHECKSIG || *op == OP_CHECKSIGVERIFY) && b.len() == 32 {
++                if let Ok(pk) = ProofXOnly::from_slice(b.as_bytes()) {
++                    out.push(pk);
++                }
++            }
++        }
++    }
++    out
++}
++
++fn p2tr_key(spk: &ProofScript) -> Result<ProofXOnly, String> {
++    if !spk.is_p2tr() {
++        return Err(format!("prevout {spk} is not P2TR"));
++    }
++    ProofXOnly::from_slice(&spk.as_bytes()[2..34]).map_err(|e| e.to_string())
++}
++
++fn check_sighash_type(t: TapSighashType) -> Result<(), String> {
++    match t {
++        TapSighashType::Default | TapSighashType::All => Ok(()),
++        other => Err(format!("sighash type {other} does not commit to the whole tx")),
++    }
++}
++
++fn verify_schnorr<C: Verification>(
++    secp: &ProofSecp<C>,
++    sig: &bdk_wallet::bitcoin::taproot::Signature,
++    digest: [u8; 32],
++    pk: &ProofXOnly,
++) -> Result<(), String> {
++    let msg = ProofMessage::from_digest(digest);
++    secp.verify_schnorr(&sig.signature, &msg, pk)
++        .map_err(|e| format!("invalid signature: {e}"))
++}
++
++pub(crate) fn opret_layout_ok(tx: &ProofTx) -> Result<(), String> {
++    let oprets = tx.output.iter().filter(|o| o.script_pubkey.is_op_return()).count();
++    let o0 = tx.output.first().ok_or("no outputs")?;
++    let b = o0.script_pubkey.as_bytes();
++    if oprets != 1 || !o0.script_pubkey.is_op_return() || o0.value.to_sat() != 0 || b.len() != 34
++        || b[1] != 0x20
++    {
++        return Err(format!(
++            "witness {} lacks a single 0-sat OP_RETURN<32B> at index 0",
++            tx.compute_txid()
++        ));
++    }
++    Ok(())
++}
++
++impl<R: ResolveWitness> Verifier<'_, R> {
++    /// [Stage 6] Mined outpoints the bundled tx `txid` hangs from, plus the bundled branch txids.
++    fn anchors(&self, txid: ProofTxid) -> Result<(Vec<ArkAnchor>, Vec<String>), String> {
++        let mut anchors = vec![];
++        let mut branch = vec![];
++        let mut stack = vec![txid];
++        let mut seen = HashSet::new();
++        while let Some(t) = stack.pop() {
++            if !seen.insert(t) {
++                continue;
++            }
++            let p = self.bundle.get(&t).ok_or_else(|| format!("tx {t} missing from the proof"))?;
++            branch.push(t.to_string());
++            for i in &p.unsigned_tx.input {
++                let prev = i.previous_output;
++                if self.bundle.contains_key(&prev.txid) {
++                    stack.push(prev.txid);
++                } else {
++                    let (out, _) = self.mined_output(prev.txid, prev.vout)?;
++                    anchors.push(ArkAnchor {
++                        outpoint: prev.to_string(),
++                        script_pubkey: out.script_pubkey.to_hex_string(),
++                        child: t.to_string(),
++                    });
++                }
++            }
++        }
++        Ok((anchors, branch))
++    }
++
++    fn mined_output(&self, txid: ProofTxid, vout: u32) -> Result<(ProofTxOut, u32), String> {
++        let rtxid = RgbTxid::from_str(&txid.to_string()).map_err(|e| e.to_string())?;
++        match self.resolver.resolve_witness(rtxid) {
++            Ok(WitnessStatus::Resolved(tx, WitnessOrd::Mined(pos))) => {
++                let out = tx
++                    .output
++                    .get(vout as usize)
++                    .cloned()
++                    .ok_or_else(|| format!("mined tx {txid} has no output {vout}"))?;
++                Ok((out, pos.height().get()))
++            }
++            Ok(_) => Err(format!(
++                "tx {txid} is neither in the proof nor mined (missing branch tx or unmined commitment tx)"
++            )),
++            Err(e) => Err(format!("resolver error for {txid}: {e}")),
++        }
++    }
++
++    fn check(&mut self, txid: ProofTxid, mode: Mode) -> Result<(ProofTxid, u32), String> {
++        if let Some(a) = self.memo.get(&(txid, mode)) {
++            return Ok(*a);
++        }
++        let psbt = self
++            .bundle
++            .get(&txid)
++            .cloned()
++            .ok_or_else(|| format!("tx {txid} missing from the proof"))?;
++        let tx = &psbt.unsigned_tx;
++        let is_witness = self.witnesses.contains(&txid);
++        // which inputs carry signatures
++        let signed: Vec<bool> = psbt
++            .inputs
++            .iter()
++            .map(|i| i.tap_key_sig.is_some() || !i.tap_script_sigs.is_empty())
++            .collect();
++        let script_signed: Vec<bool> =
++            psbt.inputs.iter().map(|i| !i.tap_script_sigs.is_empty()).collect();
++        let mut prevouts = vec![];
++        let mut anchor: Option<(ProofTxid, u32)> = None;
++        for (idx, inp) in tx.input.iter().enumerate() {
++            let prev = inp.previous_output;
++            // a witness whose *other* input is a fully signed operator leaf (a forfeit: VTXO
++            // input co-signed by user + operator) may spend an unsigned, operator-only branch
++            // (the connector branch), checked by txid linkage only
++            let vouched = is_witness
++                && script_signed.iter().enumerate().any(|(j, s)| *s && j != idx);
++            if mode == Mode::Strict && !signed[idx] && !vouched {
++                return Err(format!("input {idx} of {txid} is unsigned"));
++            }
++            let parent_unsigned = self.bundle.get(&prev.txid).is_some_and(|p| {
++                p.inputs.iter().all(|i| i.tap_key_sig.is_none() && i.tap_script_sigs.is_empty())
++            });
++            let parent_mode = if mode == Mode::LinkageOnly || (vouched && parent_unsigned) {
++                Mode::LinkageOnly
++            } else {
++                Mode::Strict
++            };
++            let (out, a) = if self.bundle.contains_key(&prev.txid) {
++                let a = self.check(prev.txid, parent_mode)?;
++                let out = self.bundle[&prev.txid]
++                    .unsigned_tx
++                    .output
++                    .get(prev.vout as usize)
++                    .cloned()
++                    .ok_or_else(|| format!("{prev} spent by {txid} does not exist"))?;
++                (out, a)
++            } else {
++                let (out, h) = self.mined_output(prev.txid, prev.vout)?;
++                (out, (prev.txid, h))
++            };
++            if anchor.map(|x| a.1 > x.1).unwrap_or(true) {
++                anchor = Some(a);
++            }
++            prevouts.push(out);
++        }
++        // signatures
++        let secp = ProofSecp::verification_only();
++        let mut cache = SighashCache::new(tx);
++        for (idx, input) in psbt.inputs.iter().enumerate() {
++            let spk = &prevouts[idx].script_pubkey;
++            if let Some(sig) = input.tap_key_sig {
++                check_sighash_type(sig.sighash_type)?;
++                let h = cache
++                    .taproot_key_spend_signature_hash(idx, &Prevouts::All(&prevouts), sig.sighash_type)
++                    .map_err(|e| e.to_string())?;
++                verify_schnorr(&secp, &sig, h.to_byte_array(), &p2tr_key(spk)?)
++                    .map_err(|e| format!("{txid} input {idx} key-path: {e}"))?;
++            } else if !input.tap_script_sigs.is_empty() {
++                let out_key = p2tr_key(spk)?;
++                let mut ok_leaf = false;
++                for (cb, (script, ver)) in input.tap_scripts.iter() {
++                    let leaf = TapLeafHash::from_script(script, *ver);
++                    let pks = checksig_pubkeys(script);
++                    if pks.is_empty() || !pks.iter().all(|pk| input.tap_script_sigs.contains_key(&(*pk, leaf))) {
++                        continue;
++                    }
++                    if mode == Mode::Strict && !pks.iter().any(|k| self.operators.contains(k)) {
++                        // e.g. a user-only exit leaf: not an operator-acknowledged spend
++                        continue;
++                    }
++                    if !cb.verify_taproot_commitment(&secp, out_key, script) {
++                        return Err(format!("{txid} input {idx}: control block does not commit to the prevout key"));
++                    }
++                    for pk in &pks {
++                        let sig = input.tap_script_sigs[&(*pk, leaf)];
++                        check_sighash_type(sig.sighash_type)?;
++                        let h = cache
++                            .taproot_script_spend_signature_hash(idx, &Prevouts::All(&prevouts), leaf, sig.sighash_type)
++                            .map_err(|e| e.to_string())?;
++                        verify_schnorr(&secp, &sig, h.to_byte_array(), pk)
++                            .map_err(|e| format!("{txid} input {idx} script-path ({pk}): {e}"))?;
++                    }
++                    ok_leaf = true;
++                    break;
++                }
++                if !ok_leaf {
++                    return Err(format!(
++                        "{txid} input {idx}: no fully signed tapleaf containing the operator key"
++                    ));
++                }
++            }
++        }
++        let anchor = anchor.ok_or_else(|| format!("{txid} has no inputs"))?;
++        self.memo.insert((txid, mode), anchor);
++        Ok(anchor)
++    }
++}
++
++/// Verify `proof` with only the blockchain `resolver`.
++pub(crate) fn verify_ark_proof<R: ResolveWitness>(
++    proof: &ArkProof,
++    resolver: &R,
++    operator_pubkey: &str,
++) -> Result<VerifiedArkWitnesses, String> {
++    Ok(verify_ark_proof_ext(proof, resolver, operator_pubkey, None)?.witnesses)
++}
++
++/// [Stage 6] Is `anchor` swept, i.e. spent on-chain (confirmed) by a tx other than its branch child?
++pub(crate) fn anchor_sweep(a: &ArkAnchor, spender: SpenderFn) -> Result<Option<String>, String> {
++    let op = ProofOutPoint::from_str(&a.outpoint).map_err(|e| e.to_string())?;
++    let spk = ProofScript::from_hex(&a.script_pubkey).map_err(|e| e.to_string())?;
++    Ok(match spender(op, &spk)? {
++        Some((s, true)) if s.to_string() != a.child => Some(s.to_string()),
++        _ => None,
++    })
++}
++
++/// [Stage 6] Verify `proof`, its `vtxos` branches and its `recoveries` (needs `spender`).
++pub(crate) fn verify_ark_proof_ext<R: ResolveWitness>(
++    proof: &ArkProof,
++    resolver: &R,
++    operator_pubkey: &str,
++    spender: Option<SpenderFn>,
++) -> Result<ArkProofVerified, String> {
++    // comma-separated hex keys (33-byte compressed or 32-byte x-only)
++    let mut operators = vec![];
++    for k in operator_pubkey.split(',').map(str::trim).filter(|k| !k.is_empty()) {
++        let b = hex::decode(k).map_err(|e| format!("operator key: {e}"))?;
++        let b = if b.len() == 33 { &b[1..] } else { &b[..] };
++        operators.push(ProofXOnly::from_slice(b).map_err(|e| format!("operator key: {e}"))?);
++    }
++    if operators.is_empty() {
++        return Err(s!("no operator key pinned"));
++    }
++    if proof.version != 1 {
++        return Err(format!("unsupported proof version {}", proof.version));
++    }
++    let mut bundle = HashMap::new();
++    for b64 in &proof.psbts {
++        let p = ProofPsbt::from_str(b64).map_err(|e| format!("invalid PSBT: {e}"))?;
++        bundle.insert(p.unsigned_tx.compute_txid(), p);
++    }
++    let mut witnesses = HashSet::new();
++    for w in &proof.witnesses {
++        witnesses.insert(ProofTxid::from_str(w).map_err(|e| e.to_string())?);
++    }
++    let mut v = Verifier { bundle, witnesses: witnesses.clone(), resolver, operators, memo: HashMap::new() };
++    let mut out = HashMap::new();
++    for w in witnesses {
++        let (anchor, _) = v.check(w, Mode::Strict)?;
++        let tx = v.bundle[&w].unsigned_tx.clone();
++        opret_layout_ok(&tx)?;
++        out.insert(w.to_string(), (tx, anchor.to_string()));
++    }
++    let mut vtxos = HashMap::new();
++    for o in &proof.vtxos {
++        let op = ProofOutPoint::from_str(o).map_err(|e| format!("vtxo {o}: {e}"))?;
++        if v.bundle.contains_key(&op.txid) {
++            v.check(op.txid, Mode::Strict)?;
++            if v.bundle[&op.txid].unsigned_tx.output.len() <= op.vout as usize {
++                return Err(format!("vtxo {o} does not exist"));
++            }
++            vtxos.insert(o.clone(), v.anchors(op.txid)?);
++        } else {
++            // already on-chain (unrolled)
++            v.mined_output(op.txid, op.vout)?;
++            vtxos.insert(o.clone(), (vec![], vec![]));
++        }
++    }
++    let mut recoveries = vec![];
++    for r in &proof.recoveries {
++        let fid = ProofTxid::from_str(r).map_err(|e| e.to_string())?;
++        if !out.contains_key(r) {
++            return Err(format!("recovery {r} is not a verified witness of the proof"));
++        }
++        let spender = spender.ok_or("recovery check needs chain access")?;
++        let psbt = &v.bundle[&fid];
++        let idx = psbt
++            .inputs
++            .iter()
++            .position(|i| !i.tap_script_sigs.is_empty())
++            .ok_or_else(|| format!("recovery {r}: no co-signed VTXO input"))?;
++        let vtxo = psbt.unsigned_tx.input[idx].previous_output;
++        if !v.bundle.contains_key(&vtxo.txid) {
++            return Err(format!(
++                "recovery forfeit {r}: VTXO {vtxo} is on-chain or its branch is missing, not a swept VTXO"
++            ));
++        }
++        let (anchors, _) = v.anchors(vtxo.txid)?;
++        let mut swept = None;
++        for a in &anchors {
++            if let Some(s) = anchor_sweep(a, spender)? {
++                swept = Some(s);
++                break;
++            }
++        }
++        match swept {
++            Some(s) => recoveries.push((r.clone(), s)),
++            None => {
++                return Err(format!(
++                    "recovery forfeit {r}: VTXO {vtxo} is not swept on-chain (anchors {:?} unspent or spent by the branch itself)",
++                    anchors.iter().map(|a| a.outpoint.clone()).collect::<Vec<_>>()
++                ));
++            }
++        }
++    }
++    Ok(ArkProofVerified { witnesses: out, vtxos, recoveries })
++}
++
++/// [Stage 6] Verify a fraud proof: both forfeits verify strictly (operator-co-signed VTXO input,
++/// linked to a mined commitment) and spend the same VTXO.
++pub(crate) fn verify_ark_fraud<R: ResolveWitness>(
++    f: &ArkFraudProof,
++    resolver: &R,
++    operator_pubkey: &str,
++) -> Result<ArkFraudEvidence, String> {
++    if f.version != 1 {
++        return Err(format!("unsupported fraud proof version {}", f.version));
++    }
++    if f.forfeit_a == f.forfeit_b {
++        return Err(s!("the two forfeits are the same tx"));
++    }
++    let vtxo = ProofOutPoint::from_str(&f.vtxo).map_err(|e| e.to_string())?;
++    let mut anchors = vec![];
++    let mut keys: Vec<String> = vec![];
++    for (fid, p) in [(&f.forfeit_a, &f.proof_a), (&f.forfeit_b, &f.proof_b)] {
++        let ver = verify_ark_proof(p, resolver, operator_pubkey)?;
++        let (tx, anchor) = ver.get(fid).ok_or_else(|| format!("forfeit {fid} not a witness of its proof"))?;
++        let psbt = p
++            .psbts
++            .iter()
++            .filter_map(|b| ProofPsbt::from_str(b).ok())
++            .find(|x| x.unsigned_tx.compute_txid().to_string() == *fid)
++            .ok_or_else(|| format!("forfeit {fid} PSBT missing"))?;
++        let idx = tx
++            .input
++            .iter()
++            .position(|i| i.previous_output == vtxo)
++            .ok_or_else(|| format!("forfeit {fid} does not spend {vtxo}"))?;
++        // the strict check above already required a fully signed leaf containing an operator key
++        let signers: Vec<String> = psbt.inputs[idx].tap_script_sigs.keys().map(|(pk, _)| pk.to_string()).collect();
++        if signers.is_empty() {
++            return Err(format!("forfeit {fid}: VTXO input not script-signed"));
++        }
++        keys.extend(signers);
++        anchors.push(anchor.clone());
++    }
++    let ops: Vec<String> = operator_pubkey
++        .split(',')
++        .filter_map(|k| hex::decode(k.trim()).ok())
++        .filter_map(|b| ProofXOnly::from_slice(if b.len() == 33 { &b[1..] } else { &b[..] }).ok())
++        .map(|k| k.to_string())
++        .collect();
++    keys.sort();
++    keys.dedup();
++    let operator_keys: Vec<String> = keys.into_iter().filter(|k| ops.contains(k)).collect();
++    if operator_keys.is_empty() {
++        return Err(s!("no pinned operator key signed the forfeits"));
++    }
++    Ok(ArkFraudEvidence {
++        vtxo: f.vtxo.clone(),
++        forfeits: [f.forfeit_a.clone(), f.forfeit_b.clone()],
++        anchors: [anchors[0].clone(), anchors[1].clone()],
++        operator_keys,
++    })
++}
+diff --git a/src/lib.rs b/src/lib.rs
+index 3fd19f1..f31cd0c 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -95,6 +95,8 @@
+ 
+ #[cfg(any(feature = "electrum", feature = "esplora"))]
+ pub(crate) mod api;
++#[cfg(any(feature = "electrum", feature = "esplora"))]
++pub mod ark_proof;
+ pub(crate) mod database;
+ pub(crate) mod error;
+ pub mod keys;
+@@ -301,7 +303,7 @@ use crate::{
+     },
+     error::IndexerError,
+     utils::{
+-        INDEXER_STOP_GAP, OffchainResolver, check_proxy, get_indexer_and_resolver, hash_file,
++        INDEXER_STOP_GAP, ARK_ATTESTED_WITNESSES_FILE, ARK_TRANSFERS_FILE, ARK_VTXOS_FILE, ArkAwareResolver, OffchainResolver, check_proxy, get_indexer_and_resolver, hash_file,
+         script_buf_from_recipient_id,
+     },
+     wallet::{AssignmentsCollection, Indexer, multisig::RespondToOperation},
+diff --git a/src/utils.rs b/src/utils.rs
+index ec2d234..ccc4441 100644
+--- a/src/utils.rs
++++ b/src/utils.rs
+@@ -1006,6 +1006,46 @@ impl<const TRANSFER: bool> ResolveWitness for OffchainResolver<'_, '_, TRANSFER>
+     }
+ }
+ 
++/// [rgb-arkade patch] File (in the wallet dir) holding the Ark-attested witness txs.
++pub(crate) const ARK_ATTESTED_WITNESSES_FILE: &str = "ark_attested_witnesses.json";
++/// [Stage 6] tracked colored VTXOs
++pub(crate) const ARK_VTXOS_FILE: &str = "ark_vtxos.json";
++/// [Stage 6] custom-colored transfers log
++pub(crate) const ARK_TRANSFERS_FILE: &str = "ark_transfers.json";
++
++/// [rgb-arkade patch] Ark-aware witness resolver.
++///
++/// Arkade forfeit txs (and other virtual txs) can be legitimate RGB witnesses that are never
++/// mined: in the honest case the forfeited VTXO never reaches the chain, and if it does the
++/// operator broadcasts that very forfeit. For every txid in `attested` (txs the caller has
++/// verified against the Ark layer: listed by the operator for a *mined* commitment tx, spending a
++/// connector of that batch), a mined chain status wins; otherwise the tx is returned as
++/// [`WitnessOrd::Tentative`] instead of being unresolved (which would archive it and invalidate
++/// the whole history). Every other txid goes to the fallback unchanged.
++#[cfg(any(feature = "electrum", feature = "esplora"))]
++pub(crate) struct ArkAwareResolver<'a> {
++    pub(crate) attested: HashMap<RgbTxid, BdkTransaction>,
++    pub(crate) fallback: &'a AnyResolver,
++}
++
++#[cfg(any(feature = "electrum", feature = "esplora"))]
++impl ResolveWitness for ArkAwareResolver<'_> {
++    fn resolve_witness(&self, witness_id: RgbTxid) -> Result<WitnessStatus, WitnessResolverError> {
++        let Some(tx) = self.attested.get(&witness_id) else {
++            return self.fallback.resolve_witness(witness_id);
++        };
++        if let Ok(WitnessStatus::Resolved(tx, WitnessOrd::Mined(pos))) =
++            self.fallback.resolve_witness(witness_id)
++        {
++            return Ok(WitnessStatus::Resolved(tx, WitnessOrd::Mined(pos)));
++        }
++        Ok(WitnessStatus::Resolved(tx.clone(), WitnessOrd::Tentative))
++    }
++    fn check_chain_net(&self, chain_net: ChainNet) -> Result<(), WitnessResolverError> {
++        self.fallback.check_chain_net(chain_net)
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+diff --git a/src/wallet/indexer.rs b/src/wallet/indexer.rs
+index 2ef1fbf..222523e 100644
+--- a/src/wallet/indexer.rs
++++ b/src/wallet/indexer.rs
+@@ -134,6 +134,32 @@ impl Indexer {
+         })
+     }
+ 
++    /// [rgb-arkade Stage 6] Spender of a (mined) outpoint with script `spk`: (txid, confirmed).
++    pub(crate) fn spender_of(
++        &self,
++        outpoint: OutPoint,
++        spk: &ScriptBuf,
++    ) -> Result<Option<(bdk_wallet::bitcoin::Txid, bool)>, String> {
++        match self {
++            #[cfg(feature = "electrum")]
++            Indexer::Electrum(client) => {
++                let hist = client.inner.script_get_history(spk).map_err(|e| e.to_string())?;
++                for h in hist {
++                    if h.tx_hash == outpoint.txid {
++                        continue;
++                    }
++                    let tx = client.inner.transaction_get(&h.tx_hash).map_err(|e| e.to_string())?;
++                    if tx.input.iter().any(|i| i.previous_output == outpoint) {
++                        return Ok(Some((h.tx_hash, h.height > 0)));
++                    }
++                }
++                Ok(None)
++            }
++            #[cfg(feature = "esplora")]
++            Indexer::Esplora(_) => Err(s!("spender lookup not implemented for esplora")),
++        }
++    }
++
+     pub(crate) fn get_tx_confirmations(&self, txid: &str) -> Result<Option<u64>, Error> {
+         Ok(match self {
+             #[cfg(feature = "electrum")]
+diff --git a/src/wallet/online.rs b/src/wallet/online.rs
+index fb204cf..133e10b 100644
+--- a/src/wallet/online.rs
++++ b/src/wallet/online.rs
+@@ -22,6 +22,49 @@ pub trait WalletOnline: WalletOffline {
+         &self.online_data().as_ref().unwrap().resolver
+     }
+ 
++    /// [rgb-arkade patch] Load the Ark-attested witness txs of this wallet (txid -> tx).
++    fn ark_attested_witnesses(&self) -> HashMap<RgbTxid, BdkTransaction> {
++        let path = self.wallet_dir().join(ARK_ATTESTED_WITNESSES_FILE);
++        let Ok(content) = fs::read_to_string(&path) else {
++            return HashMap::new();
++        };
++        let map: HashMap<String, serde_json::Value> =
++            serde_json::from_str(&content).unwrap_or_default();
++        map.into_iter()
++            .filter_map(|(txid, entry)| {
++                let txid = RgbTxid::from_str(&txid).ok()?;
++                let bytes = hex::decode(entry.get("tx")?.as_str()?).ok()?;
++                let tx: BdkTransaction =
++                    bdk_wallet::bitcoin::consensus::encode::deserialize(&bytes).ok()?;
++                Some((txid, tx))
++            })
++            .collect()
++    }
++
++    /// [rgb-arkade patch] Anchor (commitment) txid of an Ark-attested witness: the safe-height
++    /// check of a never-mined attested witness uses the depth of the batch commitment tx it hangs
++    /// from (the forfeit is only replaceable by reorging that commitment tx out).
++    fn ark_attested_anchor(&self, txid: &str) -> Option<String> {
++        let path = self.wallet_dir().join(ARK_ATTESTED_WITNESSES_FILE);
++        let content = fs::read_to_string(path).ok()?;
++        let map: HashMap<String, serde_json::Value> = serde_json::from_str(&content).ok()?;
++        Some(map.get(txid)?.get("anchor")?.as_str()?.to_string())
++    }
++
++    /// [rgb-arkade patch] Ark-aware resolver over this wallet's attested witnesses plus `extra`.
++    fn ark_aware_resolver(
++        &self,
++        extra: HashMap<RgbTxid, BdkTransaction>,
++    ) -> ArkAwareResolver<'_> {
++        let mut attested = self.ark_attested_witnesses();
++        attested.extend(extra);
++        ArkAwareResolver {
++            attested,
++            fallback: self.blockchain_resolver(),
++        }
++    }
++
++
+     fn check_fee_rate(&self, fee_rate: u64) -> Result<FeeRate, Error> {
+         #[cfg(test)]
+         if skip_check_fee_rate() {
+@@ -1228,11 +1271,14 @@ pub trait WalletOnline: WalletOffline {
+             build_opouts_dag: true,
+             safe_height,
+         };
+-        let resolver = OffchainResolver {
+-            witness_id,
+-            consignment: &consignment,
+-            fallback: self.blockchain_resolver(),
+-        };
++        // [rgb-arkade patch] terminal witness from the consignment (as OffchainResolver did) plus
++        // this wallet's Ark-attested witnesses (e.g. never-mined forfeit txs)
++        let terminal: HashMap<RgbTxid, BdkTransaction> = consignment
++            .bundled_witnesses()
++            .filter(|bw| bw.witness_id() == witness_id)
++            .filter_map(|bw| bw.pub_witness.tx().cloned().map(|tx| (witness_id, tx)))
++            .collect();
++        let resolver = self.ark_aware_resolver(terminal);
+         let valid_consignment = match consignment.clone().validate(&resolver, &validation_config) {
+             Ok(consignment) => consignment,
+             Err(ValidationError::InvalidConsignment(e)) => {
+@@ -1633,6 +1679,8 @@ pub trait WalletOnline: WalletOffline {
+         if !unsafe_txids.is_empty() {
+             let safe_height = self.safe_height(batch_transfer.min_confirmations)?;
+             for txid in unsafe_txids {
++                // [rgb-arkade patch] never-mined Ark-attested witness: use its anchor's height
++                let txid = self.ark_attested_anchor(&txid).unwrap_or(txid);
+                 let Some(tx_height) = self.tx_height(txid)? else {
+                     return Ok(None);
+                 };
+@@ -1983,7 +2031,8 @@ pub trait WalletOnline: WalletOffline {
+             let valid_consignment =
+                 ValidTransfer::load_file(&valid_consignment_path).map_err(InternalError::from)?;
+             let mut runtime = self.rgb_runtime()?;
+-            runtime.accept_transfer(valid_consignment.clone(), self.blockchain_resolver())?;
++            // [rgb-arkade patch] Ark-attested witnesses resolve as Tentative
++            runtime.accept_transfer(valid_consignment.clone(), &self.ark_aware_resolver(HashMap::new()))?;
+             let asset_schema: AssetSchema = valid_consignment.schema_id().try_into()?;
+             if asset_schema == AssetSchema::Ifa {
+                 let contract_id = valid_consignment.contract_id();
+diff --git a/src/wallet/rust_only.rs b/src/wallet/rust_only.rs
+index 11d45e5..fb6727e 100644
+--- a/src/wallet/rust_only.rs
++++ b/src/wallet/rust_only.rs
+@@ -4,6 +4,15 @@
+ 
+ use super::*;
+ 
++/// [rgb-arkade patch] Where a custom-colored transition puts a state.
++#[derive(Clone, Debug)]
++pub enum SealTarget {
++    /// An external outpoint (e.g. a VTXO or a predicted checkpoint output).
++    Explicit(Outpoint),
++    /// The exact vout of the witness tx being colored (no `opreturn_first` shift).
++    WitnessVout(u32),
++}
++
+ /// RGB asset-specific information to color a transaction
+ #[derive(Debug, Clone)]
+ pub struct AssetColoringInfo {
+@@ -407,6 +416,717 @@ impl Wallet {
+         ))
+     }
+ 
++    /// [ark-rgb-demo local patch] Issue a NIA asset whose whole supply is allocated to an
++    /// arbitrary `outpoint` (e.g. a predicted Arkade checkpoint output), which does not need to
++    /// be a UTXO tracked by this wallet. The contract is imported in the RGB stock and the asset
++    /// is saved to the DB (no coloring rows, since the outpoint is not a wallet TXO).
++    ///
++    /// Returns the asset ID.
++    pub fn issue_asset_nia_to_outpoint(
++        &self,
++        ticker: String,
++        name: String,
++        precision: u8,
++        amount: u64,
++        outpoint: Outpoint,
++    ) -> Result<String, Error> {
++        info!(self.logger(), "Issuing NIA to explicit outpoint {}...", outpoint);
++        let asset_schema = AssetSchema::Nia;
++        self.check_schema_support(&asset_schema)?;
++        let amounts = vec![amount];
++        let settled = self.get_total_issue_amount(&amounts, false)?;
++        let created_at = now().unix_timestamp();
++        let text = RicardianContract::default();
++        let terms = self.new_asset_terms(text, None);
++        let spec = AssetSpec {
++            ticker: self.check_ticker(ticker.clone())?,
++            name: self.check_name(name.clone())?,
++            details: None,
++            precision: self.check_precision(precision)?,
++        };
++        let builder = ContractBuilder::with(
++            Identity::default(),
++            NonInflatableAsset::schema(),
++            NonInflatableAsset::types(),
++            NonInflatableAsset::scripts(),
++            self.chain_net(),
++        )
++        .add_global_state("spec", spec.clone())
++        .expect("invalid spec")
++        .add_global_state("terms", terms)
++        .expect("invalid terms")
++        .add_global_state(RGB_GLOBAL_ISSUED_SUPPLY, Amount::from(settled))
++        .expect("invalid issuedSupply")
++        .add_fungible_state(RGB_STATE_ASSET_OWNER, self.get_builder_seal(outpoint), amount)
++        .expect("invalid fungible state");
++
++        let (asset_id, contract_path, valid_contract) = self.issue_contract(builder)?;
++        let asset_data = LocalAssetData {
++            asset_id: asset_id.clone(),
++            name,
++            asset_schema,
++            precision,
++            ticker: Some(ticker),
++            details: None,
++            media: None,
++            initial_supply: settled,
++            max_supply: None,
++            known_circulating_supply: None,
++            reject_list_url: None,
++            token: None,
++            timestamp: valid_contract.genesis.timestamp,
++            added_at: created_at,
++        };
++        let issue_data = IssueData {
++            asset_data,
++            valid_contract,
++            contract_path,
++            issue_utxos: HashMap::new(),
++        };
++        let txn = self.database().begin_transaction()?;
++        let mut runtime = self.rgb_runtime()?;
++        self.import_and_save_contract(&txn, &issue_data, &mut runtime)?;
++        txn.commit()?;
++        info!(self.logger(), "Issue NIA to explicit outpoint completed");
++        Ok(asset_id)
++    }
++
++    /// [ark-rgb-demo local patch] Return a fully-populated PSBT input (witness UTXO, key origins)
++    /// for one of this wallet's (vanilla or colored) UTXOs, so that a caller-built PSBT spending
++    /// it can then be signed with [`sign_psbt`](Wallet::sign_psbt).
++    pub fn psbt_input_for_utxo(&self, outpoint: Outpoint) -> Result<bdk_wallet::bitcoin::psbt::Input, Error> {
++        let op = BdkOutPoint::from_str(&outpoint.to_string()).map_err(|_| Error::InvalidTxid)?;
++        let utxo = self.bdk_wallet().get_utxo(op).ok_or_else(|| Error::Internal {
++            details: format!("UTXO {outpoint} not found in BDK wallet"),
++        })?;
++        self.bdk_wallet()
++            .get_psbt_input(utxo, None, false)
++            .map_err(|e| Error::Internal { details: e.to_string() })
++    }
++
++    /// [ark-rgb-demo local patch] Like [`color_psbt_and_consume`](Wallet::color_psbt_and_consume)
++    /// for a single asset, but the whole asset amount found on the PSBT inputs is assigned to an
++    /// *explicit external outpoint* `seal_outpoint` (e.g. a predicted Arkade checkpoint output)
++    /// instead of an output of the PSBT itself. The PSBT must already contain an OP_RETURN output
++    /// (it becomes the opret host). Returns the consignment(s).
++    pub fn color_psbt_and_consume_to_outpoint(
++        &self,
++        psbt: &mut Psbt,
++        contract_id: ContractId,
++        seal_outpoint: Outpoint,
++        blinding: u64,
++    ) -> Result<Vec<RgbTransfer>, Error> {
++        info!(self.logger(), "Coloring PSBT to explicit outpoint {}...", seal_outpoint);
++        if !psbt.unsigned_tx.output.iter().any(|o| o.script_pubkey.is_op_return()) {
++            return Err(Error::InvalidColoringInfo {
++                details: s!("PSBT must already contain an OP_RETURN output"),
++            });
++        }
++        let seal_txid = RgbTxid::from_str(&seal_outpoint.txid).map_err(|_| Error::InvalidTxid)?;
++        let mut runtime = self.rgb_runtime()?;
++        let prev_outputs = psbt
++            .unsigned_tx
++            .input
++            .iter()
++            .map(|txin| txin.previous_output)
++            .collect::<HashSet<OutPoint>>();
++        let mut builder = runtime.transition_builder(contract_id, "transfer")?;
++        let mut available: u64 = 0;
++        for (_, opout_state_map) in
++            runtime.contract_assignments_for(contract_id, prev_outputs.iter().copied())?
++        {
++            for (opout, state) in opout_state_map {
++                if let AllocatedState::Amount(amt) = &state {
++                    available += amt.as_u64();
++                }
++                builder = builder.add_input(opout, state)?;
++            }
++        }
++        if available == 0 {
++            return Err(Error::InvalidColoringInfo {
++                details: s!("no asset allocation found on the PSBT inputs"),
++            });
++        }
++        let graph_seal = GraphSeal::with_blinding(seal_txid, seal_outpoint.vout, blinding);
++        builder = builder.add_fungible_state(
++            FieldName::from(RGB_STATE_ASSET_OWNER),
++            BuilderSeal::Revealed(graph_seal),
++            available,
++        )?;
++        let transition = builder.complete_transition()?;
++
++        let opreturn_index = psbt
++            .unsigned_tx
++            .output
++            .iter()
++            .position(|o| o.script_pubkey.is_op_return())
++            .unwrap();
++        let opreturn_output = psbt.outputs.get_mut(opreturn_index).unwrap();
++        opreturn_output.set_opret_host();
++        opreturn_output
++            .set_mpc_entropy(blinding)
++            .map_err(InternalError::from)?;
++        for opout in transition.inputs() {
++            psbt.set_rgb_contract_consumer(contract_id, opout, transition.id())
++                .map_err(InternalError::from)?;
++        }
++        psbt.push_rgb_transition(transition)
++            .map_err(InternalError::from)?;
++        psbt.set_rgb_close_method(CloseMethod::OpretFirst);
++        psbt.set_as_unmodifiable();
++        let fascia = psbt.rgb_commit().map_err(InternalError::from)?;
++        let witness_txid = psbt.get_txid();
++        runtime.consume_fascia(fascia, None)?;
++        let explicit = ExplicitSeal::with(seal_txid, seal_outpoint.vout);
++        let transfer = runtime.transfer(contract_id, vec![explicit], vec![], Some(witness_txid))?;
++        info!(self.logger(), "Color PSBT to explicit outpoint completed");
++        Ok(vec![transfer])
++    }
++
++    /// [rgb-arkade patch] Generic single-asset coloring with caller-chosen seals.
++    ///
++    /// All the `contract_id` state found on the PSBT inputs is moved to `beneficiaries`, each a
++    /// ([`SealTarget`], amount, blinding). [`SealTarget::WitnessVout`] uses the *exact* vout of
++    /// this PSBT (no `opreturn_first` shift), [`SealTarget::Explicit`] an external outpoint. The
++    /// amounts must add up to the input state. The PSBT must contain a bare OP_RETURN output (it
++    /// becomes the opret host). The fascia is consumed (Tentative) and one consignment covering
++    /// all the beneficiaries is returned.
++    pub fn color_psbt_and_consume_custom(
++        &self,
++        psbt: &mut Psbt,
++        contract_id: ContractId,
++        beneficiaries: Vec<(SealTarget, u64, u64)>,
++    ) -> Result<RgbTransfer, Error> {
++        info!(self.logger(), "Coloring PSBT with custom seals {:?}...", beneficiaries);
++        let opreturn_index = psbt
++            .unsigned_tx
++            .output
++            .iter()
++            .position(|o| o.script_pubkey.is_op_return())
++            .ok_or_else(|| Error::InvalidColoringInfo {
++                details: s!("PSBT must already contain an OP_RETURN output"),
++            })?;
++        let mut runtime = self.rgb_runtime()?;
++        let prev_outputs = psbt
++            .unsigned_tx
++            .input
++            .iter()
++            .map(|txin| txin.previous_output)
++            .collect::<HashSet<OutPoint>>();
++        let mut builder = runtime.transition_builder(contract_id, "transfer")?;
++        let mut available: u64 = 0;
++        for (_, opout_state_map) in
++            runtime.contract_assignments_for(contract_id, prev_outputs.iter().copied())?
++        {
++            for (opout, state) in opout_state_map {
++                if let AllocatedState::Amount(amt) = &state {
++                    available += amt.as_u64();
++                }
++                builder = builder.add_input(opout, state)?;
++            }
++        }
++        let requested: u64 = beneficiaries.iter().map(|(_, amt, _)| *amt).sum();
++        if available == 0 || requested != available {
++            return Err(Error::InvalidColoringInfo {
++                details: format!("input state {available} != requested {requested}"),
++            });
++        }
++        let mut explicit_targets = vec![];
++        let mut witness_vouts = vec![];
++        for (target, amount, blinding) in &beneficiaries {
++            let graph_seal = match target {
++                SealTarget::Explicit(outpoint) => {
++                    let txid = RgbTxid::from_str(&outpoint.txid).map_err(|_| Error::InvalidTxid)?;
++                    explicit_targets.push(ExplicitSeal::with(txid, outpoint.vout));
++                    GraphSeal::with_blinding(txid, outpoint.vout, *blinding)
++                }
++                SealTarget::WitnessVout(vout) => {
++                    if *vout as usize >= psbt.outputs.len() || *vout as usize == opreturn_index {
++                        return Err(Error::InvalidColoringInfo {
++                            details: format!("invalid witness vout {vout}"),
++                        });
++                    }
++                    witness_vouts.push(*vout);
++                    GraphSeal::with_blinded_vout(*vout, *blinding)
++                }
++            };
++            builder = builder.add_fungible_state(
++                FieldName::from(RGB_STATE_ASSET_OWNER),
++                BuilderSeal::Revealed(graph_seal),
++                *amount,
++            )?;
++        }
++        let transition = builder.complete_transition()?;
++
++        let mpc_entropy = beneficiaries.first().map(|(_, _, b)| *b).unwrap_or_default();
++        let opreturn_output = psbt.outputs.get_mut(opreturn_index).unwrap();
++        opreturn_output.set_opret_host();
++        opreturn_output
++            .set_mpc_entropy(mpc_entropy)
++            .map_err(InternalError::from)?;
++        for opout in transition.inputs() {
++            psbt.set_rgb_contract_consumer(contract_id, opout, transition.id())
++                .map_err(InternalError::from)?;
++        }
++        psbt.push_rgb_transition(transition)
++            .map_err(InternalError::from)?;
++        psbt.set_rgb_close_method(CloseMethod::OpretFirst);
++        psbt.set_as_unmodifiable();
++        let fascia = psbt.rgb_commit().map_err(InternalError::from)?;
++        let witness_txid = psbt.get_txid();
++        runtime.consume_fascia(fascia, None)?;
++        let mut seals = explicit_targets;
++        seals.extend(witness_vouts.into_iter().map(|v| ExplicitSeal::with(witness_txid, v)));
++        let transfer = runtime.transfer(contract_id, seals, vec![], Some(witness_txid))?;
++        drop(runtime);
++        // [Stage 6] log the custom-colored transfer and mark consumed tracked VTXOs
++        let inputs: Vec<String> = prev_outputs.iter().map(|o| o.to_string()).collect();
++        let outputs = beneficiaries
++            .iter()
++            .map(|(t, a, _)| match t {
++                SealTarget::Explicit(o) => (format!("{}:{}", o.txid, o.vout), *a),
++                SealTarget::WitnessVout(v) => (format!("{witness_txid}:{v}"), *a),
++            })
++            .collect();
++        let mut log: Vec<crate::ark_proof::ArkTransferRecord> = self.ark_json_load(ARK_TRANSFERS_FILE);
++        log.retain(|r| r.witness != witness_txid.to_string());
++        log.push(crate::ark_proof::ArkTransferRecord {
++            witness: witness_txid.to_string(),
++            asset_id: contract_id.to_string(),
++            inputs: inputs.clone(),
++            outputs,
++            created_at: std::time::SystemTime::now()
++                .duration_since(std::time::UNIX_EPOCH)
++                .map(|d| d.as_secs())
++                .unwrap_or_default(),
++            status: s!("pending"),
++        });
++        self.ark_json_save(ARK_TRANSFERS_FILE, &log)?;
++        let mut reg: HashMap<String, crate::ark_proof::ArkVtxoRecord> = self.ark_json_load(ARK_VTXOS_FILE);
++        for i in &inputs {
++            if let Some(r) = reg.get_mut(i) {
++                r.spent_by = Some(witness_txid.to_string());
++            }
++        }
++        self.ark_json_save(ARK_VTXOS_FILE, &reg)?;
++        info!(self.logger(), "Color PSBT with custom seals completed");
++        Ok(transfer)
++    }
++
++    /// [rgb-arkade patch] Like [`accept_transfer_consignment`](Wallet::accept_transfer_consignment)
++    /// but validating a consignment whose history contains a *chain* of offchain (Arkade
++    /// virtual) witnesses: every txid in `offchain_txids` is resolved from the bundled witness
++    /// as Tentative unless it is already mined, and so is every Ark-attested witness of this wallet
++    /// (see `ArkAwareResolver` and [`add_ark_attested_witness`](Wallet::add_ark_attested_witness)). The received seal
++    /// is `vout` of witness `txid` with the given `blinding`.
++    #[cfg(any(feature = "electrum", feature = "esplora"))]
++    pub fn accept_transfer_consignment_offchain(
++        &mut self,
++        online: Online,
++        consignment_path: PathBuf,
++        offchain_txids: Vec<String>,
++        txid: String,
++        vout: u32,
++        blinding: u64,
++    ) -> Result<(RgbTransfer, Vec<Assignment>), Error> {
++        info!(self.logger(), "Accepting offchain-chain transfer consignment...");
++        self.check_online(online)?;
++        let witness_id = RgbTxid::from_str(&txid).map_err(|_| Error::InvalidTxid)?;
++        let mut offchain_witnesses = HashSet::new();
++        for t in &offchain_txids {
++            offchain_witnesses.insert(RgbTxid::from_str(t).map_err(|_| Error::InvalidTxid)?);
++        }
++        let consignment =
++            RgbTransfer::load_file(&consignment_path).map_err(|_| Error::InvalidFilePath {
++                file_path: consignment_path.to_string_lossy().to_string(),
++            })?;
++        let asset_schema: AssetSchema = consignment.schema_id().try_into()?;
++        self.check_schema_support(&asset_schema)?;
++        let mut runtime = self.rgb_runtime()?;
++        runtime.store_secret_seal(GraphSeal::with_blinded_vout(vout, blinding))?;
++        // [rgb-arkade patch] offchain witnesses from the consignment + Ark-attested witnesses
++        let bundled: HashMap<RgbTxid, BdkTransaction> = consignment
++            .bundled_witnesses()
++            .filter(|bw| offchain_witnesses.contains(&bw.witness_id()))
++            .filter_map(|bw| bw.pub_witness.tx().cloned().map(|tx| (bw.witness_id(), tx)))
++            .collect();
++        let resolver = self.ark_aware_resolver(bundled);
++        let validation_config = ValidationConfig {
++            chain_net: self.chain_net(),
++            trusted_typesystem: asset_schema.types(),
++            ..Default::default()
++        };
++        let valid_consignment = match consignment.clone().validate(&resolver, &validation_config) {
++            Ok(consignment) => consignment,
++            Err(ValidationError::InvalidConsignment(e)) => {
++                error!(self.logger(), "Consignment is invalid: {}", e);
++                return Err(Error::InvalidConsignment);
++            }
++            Err(ValidationError::ResolverError(e)) => {
++                return Err(Error::Network {
++                    details: e.to_string(),
++                });
++            }
++        };
++        let valid_contract = valid_consignment.clone().into_valid_contract();
++        runtime
++            .import_contract(valid_contract, self.blockchain_resolver())
++            .expect("failure importing validated contract");
++        let received =
++            self.extract_received_assignments(&consignment, witness_id, Some(vout), None);
++        runtime.accept_transfer(valid_consignment, &resolver)?;
++        drop(runtime);
++        self.ark_set_vtxo_owned(format!("{txid}:{vout}"), true)?;
++        info!(self.logger(), "Accept offchain-chain transfer completed");
++        Ok((consignment, received.into_values().collect()))
++    }
++
++    /// [rgb-arkade patch] Validate a consignment file without accepting it, either with the
++    /// stock blockchain resolver (`ark_aware = false`) or with this wallet's Ark-aware resolver
++    /// (`ark_aware = true`, i.e. also resolving the Ark-attested witnesses). For tests.
++    #[cfg(any(feature = "electrum", feature = "esplora"))]
++    pub fn validate_consignment_ark(
++        &self,
++        online: Online,
++        consignment_path: PathBuf,
++        ark_aware: bool,
++    ) -> Result<(), Error> {
++        self.check_online(online)?;
++        let consignment =
++            RgbTransfer::load_file(&consignment_path).map_err(|_| Error::InvalidFilePath {
++                file_path: consignment_path.to_string_lossy().to_string(),
++            })?;
++        let asset_schema: AssetSchema = consignment.schema_id().try_into()?;
++        let validation_config = ValidationConfig {
++            chain_net: self.chain_net(),
++            trusted_typesystem: asset_schema.types(),
++            ..Default::default()
++        };
++        let res = if ark_aware {
++            consignment.validate(&self.ark_aware_resolver(HashMap::new()), &validation_config)
++        } else {
++            consignment.validate(self.blockchain_resolver(), &validation_config)
++        };
++        match res {
++            Ok(_) => Ok(()),
++            Err(ValidationError::InvalidConsignment(e)) => {
++                error!(self.logger(), "Consignment is invalid: {}", e);
++                Err(Error::InvalidConsignment)
++            }
++            Err(ValidationError::ResolverError(e)) => Err(Error::Network {
++                details: e.to_string(),
++            }),
++        }
++    }
++
++    /// [rgb-arkade patch] Verify a self-contained Ark proof (see [`crate::ark_proof`]) using only
++    /// the proof file and the blockchain (no arkd), then register every proven witness as
++    /// Ark-attested, anchored to its most recent mined ancestor. `operator_pubkey` is the pinned
++    /// Ark operator signer key (wallet config, hex). Returns the registered txids.
++    #[cfg(any(feature = "electrum", feature = "esplora"))]
++    pub fn import_ark_proof(
++        &self,
++        online: Online,
++        proof_path: PathBuf,
++        operator_pubkey: String,
++    ) -> Result<Vec<String>, Error> {
++        self.check_online(online)?;
++        let content = fs::read_to_string(&proof_path).map_err(|_| Error::InvalidFilePath {
++            file_path: proof_path.to_string_lossy().to_string(),
++        })?;
++        let proof: crate::ark_proof::ArkProof =
++            serde_json::from_str(&content).map_err(|e| Error::Internal {
++                details: format!("invalid Ark proof: {e}"),
++            })?;
++        let indexer = self.indexer();
++        let spender = |op: BdkOutPoint, spk: &ScriptBuf| indexer.spender_of(op, spk);
++        let verified = crate::ark_proof::verify_ark_proof_ext(
++            &proof,
++            self.blockchain_resolver(),
++            &operator_pubkey,
++            Some(&spender),
++        )
++        .map_err(|details| Error::Internal {
++            details: format!("Ark proof rejected: {details}"),
++        })?;
++        for (fid, sweep) in &verified.recoveries {
++            info!(self.logger(), "Ark proof: recovery forfeit {} accepted, branch swept by {}", fid, sweep);
++        }
++        // [Stage 6] track the bundled VTXOs (liveness from the chain)
++        let mut reg: HashMap<String, crate::ark_proof::ArkVtxoRecord> = self.ark_json_load(ARK_VTXOS_FILE);
++        for (o, (anchors, branch)) in verified.vtxos {
++            let spent_by = reg.get(&o).and_then(|r| r.spent_by.clone());
++            let owned = reg.get(&o).map(|r| r.owned).unwrap_or(false);
++            reg.insert(o.clone(), crate::ark_proof::ArkVtxoRecord { outpoint: o, anchors, branch, spent_by, owned });
++        }
++        self.ark_json_save(ARK_VTXOS_FILE, &reg)?;
++        let mut log: Vec<crate::ark_proof::ArkTransferRecord> = self.ark_json_load(ARK_TRANSFERS_FILE);
++        for r in log.iter_mut() {
++            if verified.witnesses.contains_key(&r.witness) && r.status == "pending" {
++                r.status = s!("attested");
++            }
++        }
++        self.ark_json_save(ARK_TRANSFERS_FILE, &log)?;
++        let mut done = vec![];
++        for (txid, (tx, anchor)) in verified.witnesses {
++            let hex = hex::encode(bdk_wallet::bitcoin::consensus::encode::serialize(&tx));
++            self.add_ark_attested_witness(hex, anchor.clone())?;
++            info!(self.logger(), "Ark proof: witness {} anchored to {}", txid, anchor);
++            done.push(txid);
++        }
++        done.sort();
++        Ok(done)
++    }
++
++    fn ark_json_load<T: serde::de::DeserializeOwned + Default>(&self, name: &str) -> T {
++        fs::read_to_string(self.wallet_dir().join(name))
++            .ok()
++            .and_then(|c| serde_json::from_str(&c).ok())
++            .unwrap_or_default()
++    }
++
++    fn ark_json_save<T: Serialize>(&self, name: &str, v: &T) -> Result<(), Error> {
++        let text = serde_json::to_string_pretty(v).map_err(|e| Error::Internal { details: e.to_string() })?;
++        fs::write(self.wallet_dir().join(name), text).map_err(|e| Error::Internal { details: e.to_string() })
++    }
++
++    /// [rgb-arkade Stage 6] Liveness of a tracked colored VTXO, from the chain only (indexer):
++    /// swept branch -> `ToRecover`, mined VTXO tx -> `Unrolled`, consumed by this wallet ->
++    /// `Spent`, otherwise `Active`. The VTXO must have been tracked via an Ark proof `vtxos` entry.
++    #[cfg(any(feature = "electrum", feature = "esplora"))]
++    pub fn ark_vtxo_status(&self, online: Online, outpoint: String) -> Result<crate::ark_proof::ArkVtxoStatus, Error> {
++        self.check_online(online)?;
++        let reg: HashMap<String, crate::ark_proof::ArkVtxoRecord> = self.ark_json_load(ARK_VTXOS_FILE);
++        let rec = reg.get(&outpoint).ok_or_else(|| Error::Internal {
++            details: format!("VTXO {outpoint} is not tracked (import an Ark proof listing it)"),
++        })?;
++        self.ark_status_of(rec)
++    }
++
++    #[cfg(any(feature = "electrum", feature = "esplora"))]
++    fn ark_status_of(&self, rec: &crate::ark_proof::ArkVtxoRecord) -> Result<crate::ark_proof::ArkVtxoStatus, Error> {
++        use crate::ark_proof::ArkVtxoStatus;
++        if let Some(by) = &rec.spent_by {
++            return Ok(ArkVtxoStatus::Spent { by: by.clone() });
++        }
++        let txid = rec.outpoint.split(':').next().unwrap_or_default();
++        if let Some(c) = self.indexer().get_tx_confirmations(txid)? {
++            if c > 0 {
++                return Ok(ArkVtxoStatus::Unrolled);
++            }
++        }
++        let indexer = self.indexer();
++        let spender = |op: BdkOutPoint, spk: &ScriptBuf| indexer.spender_of(op, spk);
++        for a in &rec.anchors {
++            if let Some(s) = crate::ark_proof::anchor_sweep(a, &spender).map_err(|details| Error::Indexer { details })? {
++                return Ok(ArkVtxoStatus::ToRecover { sweep_txid: s });
++            }
++        }
++        Ok(ArkVtxoStatus::Active)
++    }
++
++    /// [rgb-arkade Stage 6] Ark-aware balance of `asset_id`: the state this wallet's RGB stock
++    /// holds on tracked VTXOs, split by liveness (active / to recover / unrolled / in flight).
++    /// Unlike [`get_asset_balance`](Wallet::get_asset_balance) (DB, on-chain UTXOs only), a swept
++    /// VTXO is reported as `to_recover`, never as settled.
++    #[cfg(any(feature = "electrum", feature = "esplora"))]
++    pub fn get_asset_balance_ark(&self, online: Online, asset_id: String) -> Result<crate::ark_proof::ArkAssetBalance, Error> {
++        use crate::ark_proof::ArkVtxoStatus;
++        self.check_online(online)?;
++        let contract_id = ContractId::from_str(&asset_id).map_err(|_| Error::AssetNotFound { asset_id: asset_id.clone() })?;
++        let reg: HashMap<String, crate::ark_proof::ArkVtxoRecord> = self.ark_json_load(ARK_VTXOS_FILE);
++        let log: Vec<crate::ark_proof::ArkTransferRecord> = self.ark_json_load(ARK_TRANSFERS_FILE);
++        let pending: HashSet<String> = log.iter().filter(|r| r.status == "pending").map(|r| r.witness.clone()).collect();
++        let runtime = self.rgb_runtime()?;
++        let mut bal = crate::ark_proof::ArkAssetBalance::default();
++        let mut keys: Vec<&String> = reg.keys().collect();
++        keys.sort();
++        for o in keys {
++            let rec = &reg[o];
++            if !rec.owned {
++                continue;
++            }
++            let op = BdkOutPoint::from_str(o).map_err(|_| Error::InvalidTxid)?;
++            let amount: u64 = match runtime.contract_assignments_for(contract_id, [op]) {
++                Ok(m) => m
++                    .values()
++                    .flat_map(|x| x.values())
++                    .map(|st| if let AllocatedState::Amount(a) = st { a.as_u64() } else { 0 })
++                    .sum(),
++                Err(_) => 0,
++            };
++            if amount == 0 {
++                continue;
++            }
++            let st = self.ark_status_of(rec)?;
++            if let ArkVtxoStatus::Spent { by } = &st {
++                // the state left once the spending witness is attested (verified Ark proof)
++                if !pending.contains(by) {
++                    continue;
++                }
++            }
++            match &st {
++                ArkVtxoStatus::Active => bal.active += amount,
++                ArkVtxoStatus::Unrolled => bal.unrolled += amount,
++                ArkVtxoStatus::ToRecover { .. } => bal.to_recover += amount,
++                ArkVtxoStatus::Spent { .. } => bal.in_flight += amount,
++            }
++            bal.vtxos.push((o.clone(), amount, st));
++        }
++        Ok(bal)
++    }
++
++    /// [rgb-arkade Stage 6] Accept a consignment that assigns state to an *explicit* VTXO seal
++    /// `outpoint` (refresh / recovery forfeit paying this wallet). Import the Ark proof first
++    /// (it attests the forfeit and tracks `outpoint`). Returns the amount received on it.
++    #[cfg(any(feature = "electrum", feature = "esplora"))]
++    pub fn ark_receive_vtxo_transfer(&mut self, online: Online, consignment_path: PathBuf, outpoint: String) -> Result<u64, Error> {
++        self.check_online(online)?;
++        let reg: HashMap<String, crate::ark_proof::ArkVtxoRecord> = self.ark_json_load(ARK_VTXOS_FILE);
++        if !reg.contains_key(&outpoint) {
++            return Err(Error::Internal { details: format!("VTXO {outpoint} is not tracked (import its Ark proof first)") });
++        }
++        let consignment = RgbTransfer::load_file(&consignment_path).map_err(|_| Error::InvalidFilePath {
++            file_path: consignment_path.to_string_lossy().to_string(),
++        })?;
++        let contract_id = consignment.contract_id();
++        let asset_schema: AssetSchema = consignment.schema_id().try_into()?;
++        self.check_schema_support(&asset_schema)?;
++        let resolver = self.ark_aware_resolver(HashMap::new());
++        let validation_config = ValidationConfig {
++            chain_net: self.chain_net(),
++            trusted_typesystem: asset_schema.types(),
++            ..Default::default()
++        };
++        let valid = match consignment.clone().validate(&resolver, &validation_config) {
++            Ok(c) => c,
++            Err(ValidationError::InvalidConsignment(e)) => {
++                error!(self.logger(), "Consignment is invalid: {}", e);
++                return Err(Error::InvalidConsignment);
++            }
++            Err(ValidationError::ResolverError(e)) => return Err(Error::Network { details: e.to_string() }),
++        };
++        let mut runtime = self.rgb_runtime()?;
++        runtime
++            .import_contract(valid.clone().into_valid_contract(), self.blockchain_resolver())
++            .map_err(|e| Error::Internal { details: format!("import contract: {e}") })?;
++        runtime.accept_transfer(valid, &resolver)?;
++        let op = BdkOutPoint::from_str(&outpoint).map_err(|_| Error::InvalidTxid)?;
++        let amount: u64 = runtime
++            .contract_assignments_for(contract_id, [op])?
++            .values()
++            .flat_map(|x| x.values())
++            .map(|st| if let AllocatedState::Amount(a) = st { a.as_u64() } else { 0 })
++            .sum();
++        drop(runtime);
++        self.ark_set_vtxo_owned(outpoint.clone(), true)?;
++        info!(self.logger(), "Ark VTXO transfer accepted: {} on {}", amount, outpoint);
++        Ok(amount)
++    }
++
++    /// [rgb-arkade Stage 6] Declare a tracked VTXO as owned by this wallet (e.g. own change or
++    /// own refresh output; received VTXOs are marked automatically). Untracked outpoints get a
++    /// record without anchors (liveness then unknown -> reported `Active`).
++    pub fn ark_set_vtxo_owned(&self, outpoint: String, owned: bool) -> Result<(), Error> {
++        let mut reg: HashMap<String, crate::ark_proof::ArkVtxoRecord> = self.ark_json_load(ARK_VTXOS_FILE);
++        reg.entry(outpoint.clone())
++            .or_insert_with(|| crate::ark_proof::ArkVtxoRecord { outpoint, anchors: vec![], branch: vec![], spent_by: None, owned })
++            .owned = owned;
++        self.ark_json_save(ARK_VTXOS_FILE, &reg)
++    }
++
++    /// [rgb-arkade Stage 6] The custom-colored (Arkade) transfers this wallet made.
++    pub fn list_ark_transfers(&self) -> Result<Vec<crate::ark_proof::ArkTransferRecord>, Error> {
++        Ok(self.ark_json_load(ARK_TRANSFERS_FILE))
++    }
++
++    /// [rgb-arkade Stage 6] Roll back a custom-colored transfer whose witness can never exist
++    /// (e.g. the forfeit of a failed batch): archive the witness in the RGB stock (its
++    /// assignments disappear, the consumed state is spendable again), un-mark the consumed
++    /// VTXOs and mark the log entry `rolled_back`. Refused if the witness is mined/in the
++    /// mempool or Ark-attested. The caller must know the batch failed (no operator co-signed
++    /// forfeit and no commitment tx can include it).
++    #[cfg(any(feature = "electrum", feature = "esplora"))]
++    pub fn ark_rollback_transfer(&self, online: Online, witness_txid: String) -> Result<(), Error> {
++        self.check_online(online)?;
++        if self.indexer().get_tx_confirmations(&witness_txid)?.is_some() {
++            return Err(Error::Internal { details: format!("{witness_txid} is known to the chain: cannot roll back") });
++        }
++        let wid = RgbTxid::from_str(&witness_txid).map_err(|_| Error::InvalidTxid)?;
++        if self.ark_attested_witnesses().contains_key(&wid) {
++            return Err(Error::Internal { details: format!("{witness_txid} is Ark-attested: cannot roll back") });
++        }
++        self.upsert_witness(wid, WitnessOrd::Archived)?;
++        let mut reg: HashMap<String, crate::ark_proof::ArkVtxoRecord> = self.ark_json_load(ARK_VTXOS_FILE);
++        for r in reg.values_mut() {
++            if r.spent_by.as_deref() == Some(witness_txid.as_str()) {
++                r.spent_by = None;
++            }
++        }
++        self.ark_json_save(ARK_VTXOS_FILE, &reg)?;
++        let mut log: Vec<crate::ark_proof::ArkTransferRecord> = self.ark_json_load(ARK_TRANSFERS_FILE);
++        for r in log.iter_mut() {
++            if r.witness == witness_txid {
++                r.status = s!("rolled_back");
++            }
++        }
++        self.ark_json_save(ARK_TRANSFERS_FILE, &log)?;
++        info!(self.logger(), "Ark transfer {} rolled back", witness_txid);
++        Ok(())
++    }
++
++    /// [rgb-arkade Stage 6] Verify a fraud proof (two operator-co-signed forfeits of the same
++    /// VTXO, each linked to a mined commitment tx) with the chain only.
++    #[cfg(any(feature = "electrum", feature = "esplora"))]
++    pub fn verify_ark_fraud_proof(&self, online: Online, path: PathBuf, operator_pubkey: String) -> Result<crate::ark_proof::ArkFraudEvidence, Error> {
++        self.check_online(online)?;
++        let content = fs::read_to_string(&path).map_err(|_| Error::InvalidFilePath { file_path: path.to_string_lossy().to_string() })?;
++        let f: crate::ark_proof::ArkFraudProof = serde_json::from_str(&content).map_err(|e| Error::Internal { details: format!("invalid fraud proof: {e}") })?;
++        crate::ark_proof::verify_ark_fraud(&f, self.blockchain_resolver(), &operator_pubkey)
++            .map_err(|details| Error::Internal { details: format!("fraud proof rejected: {details}") })
++    }
++
++    /// [rgb-arkade patch] Register a consensus-hex-encoded tx as an *Ark-attested* RGB witness.
++    ///
++    /// Use it for Arkade txs that legitimately close RGB seals but may never be mined, i.e. the
++    /// forfeit tx of a colored VTXO that was refreshed or collaboratively exited. The caller MUST
++    /// have verified it against the Ark layer first (operator `GetForfeitTxs` of a mined
++    /// commitment tx, connector input from that batch). All validation, acceptance and
++    /// `update_witnesses` calls of this wallet then resolve it as Tentative unless mined, and the
++    /// safe-height wait uses the confirmations of `anchor_txid` (the batch commitment tx).
++    /// Returns the txid.
++    pub fn add_ark_attested_witness(
++        &self,
++        tx_hex: String,
++        anchor_txid: String,
++    ) -> Result<String, Error> {
++        RgbTxid::from_str(&anchor_txid).map_err(|_| Error::InvalidTxid)?;
++        let bytes = hex::decode(&tx_hex).map_err(|e| Error::Internal {
++            details: format!("invalid tx hex: {e}"),
++        })?;
++        let tx: BdkTransaction = bdk_wallet::bitcoin::consensus::encode::deserialize(&bytes)
++            .map_err(|e| Error::Internal {
++                details: format!("invalid tx: {e}"),
++            })?;
++        let txid = tx.compute_txid().to_string();
++        let path = self.wallet_dir().join(ARK_ATTESTED_WITNESSES_FILE);
++        let mut map: HashMap<String, serde_json::Value> = fs::read_to_string(&path)
++            .ok()
++            .and_then(|c| serde_json::from_str(&c).ok())
++            .unwrap_or_default();
++        map.insert(
++            txid.clone(),
++            serde_json::json!({ "tx": tx_hex, "anchor": anchor_txid }),
++        );
++        fs::write(&path, serde_json::to_string_pretty(&map).unwrap()).map_err(|e| {
++            Error::Internal {
++                details: e.to_string(),
++            }
++        })?;
++        info!(self.logger(), "Added Ark-attested witness {}", txid);
++        Ok(txid)
++    }
++
+     /// Consume an RGB fascia.
+     ///
+     /// <div class="warning">This method is meant for special usage and is normally not needed, use
+@@ -449,8 +1169,9 @@ impl Wallet {
+     ) -> Result<UpdateRes, Error> {
+         info!(self.logger(), "Updating witnesses...");
+         self.check_online(online)?;
++        // [rgb-arkade patch] Ark-attested witnesses stay Tentative instead of being archived
+         let update_res = self.rgb_runtime()?.update_witnesses(
+-            self.blockchain_resolver(),
++            &self.ark_aware_resolver(HashMap::new()),
+             after_height,
+             force_witnesses,
+         )?;

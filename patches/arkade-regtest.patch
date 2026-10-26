@@ -1,0 +1,40 @@
+diff --git a/docker/compose.ark.yml b/docker/compose.ark.yml
+index ee47d1f..a07f547 100644
+--- a/docker/compose.ark.yml
++++ b/docker/compose.ark.yml
+@@ -57,7 +57,7 @@ services:
+       - ARKD_NO_MACAROONS=true
+       - ARKD_WALLET_ADDR=arkd-wallet:6060
+       - ARKD_ESPLORA_URL=http://mempool_web/api
+-      - ARKD_VTXO_MIN_AMOUNT=1
++      - ARKD_VTXO_MIN_AMOUNT=${ARKD_VTXO_MIN_AMOUNT:-1}
+       - ARKD_DB_TYPE=sqlite
+       - ARKD_EVENT_DB_TYPE=badger
+       - ARKD_UNLOCKER_TYPE=env
+diff --git a/docker/compose.base.yml b/docker/compose.base.yml
+index 1cc388c..a7e007e 100644
+--- a/docker/compose.base.yml
++++ b/docker/compose.base.yml
+@@ -221,7 +221,10 @@ services:
+       MEMPOOL_HTTP_PORT: "8999"
+       MEMPOOL_CACHE_DIR: /backend/cache
+       MEMPOOL_POLL_RATE_MS: "2000"
+-      MEMPOOL_INDEXING_BLOCKS_AMOUNT: "-1"
++      MEMPOOL_INDEXING_BLOCKS_AMOUNT: "${MEMPOOL_INDEXING_BLOCKS_AMOUNT:--1}"
++      MEMPOOL_AUTOMATIC_POOLS_UPDATE: "${MEMPOOL_AUTOMATIC_POOLS_UPDATE:-true}"
++      MEMPOOL_POOLS_JSON_URL: "${MEMPOOL_POOLS_JSON_URL:-https://raw.githubusercontent.com/mempool/mining-pools/master/pools-v2.json}"
++      MEMPOOL_POOLS_JSON_TREE_URL: "${MEMPOOL_POOLS_JSON_TREE_URL:-https://api.github.com/repos/mempool/mining-pools/git/trees/master}"
+       MEMPOOL_STDOUT_LOG_MIN_PRIORITY: debug
+       STATISTICS_ENABLED: "false"
+       LIGHTNING_ENABLED: "false"
+@@ -245,6 +248,10 @@ services:
+     environment:
+       FRONTEND_HTTP_PORT: "80"
+       BACKEND_MAINNET_HTTP_HOST: mempool_api
++    # [rgb-arkade local patch] containers on this box have no DNS/egress; nginx only needs the
++    # name to resolve at startup (the mempool.space proxy routes are unused on regtest).
++    extra_hosts:
++      - "mempool.space:127.0.0.1"
+     ports:
+       - "${MEMPOOL_WEB_PORT:-3000}:80"
+ 

@@ -1,0 +1,12 @@
+target/
+vendor/
+arkade-regtest/
+arkd-image/arkd
+tools/arkdb
+state/
+logs/
+watchtowerd/
+watchtowerd.prev-*/
+*.rgbc
+*.arkproof.json
+.env

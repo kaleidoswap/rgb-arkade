@@ -1,0 +1,72 @@
+{
+ "stage": 6,
+ "date": "2026-10-26",
+ "window_cet": "10:10-12:30",
+ "arkd": "v0.9.15-rgb4 (unchanged)",
+ "items": {
+  "1_multi_user_batch": {
+   "result": "PASS",
+   "run": "state/run-1793006932-stage6-multi",
+   "hop_ark_tx": "efbb46f631ae5a57d3adb66c26de2eb80d355a5e890b85f365ae9b89ccbbfdbf",
+   "checkpoint": "be70a70d4ede5a34e4ec1ef6bdcdffcda8a60d294a5243b19fd643ea532de7df",
+   "commitment": "3651a9cd919286225427507ad674e4d7058e87c1f65b7b8677a561bada57d04d",
+   "forfeits": {
+    "alice": "65190374fa5e657fb8395764028b0b4aee7238f0075b781c20a1d13e18bdf868",
+    "dave": "28091e963189c8e93d96770d79315004df115c09ccefc1caa636c3544bf66a13",
+    "bob_to_frank": "62c98b6f301c9b1c35626f8c19fdaf52ad1a5c9fb88adbee1983ce9bafb00768"
+   },
+   "proof_bytes": {
+    "alice": 6234,
+    "dave": 6368,
+    "frank": 3868
+   },
+   "balances": {
+    "alice_A": 700,
+    "dave_A": 300,
+    "frank_B": 1000,
+    "bob_B": 0
+   }
+  },
+  "2_failed_batch": {
+   "result": "PASS",
+   "run": "state/run-1793007030-stage6-fail",
+   "failed_forfeit": "2b8c6838b9c57f6d325f5e77ef3248e7ff8c264573c81b3bac35e04fc4c16917",
+   "retry_commitment": "d26d961e3e0fb4de8d7c6a48382a4388a03a1bd91abe7308ebc51e4068e826ea",
+   "retry_forfeit": "e03043a553929cc5e0821f9d072d3b2a4d04fd55c9d06c6e620afc40c618acda"
+  },
+  "3_rgb_lib_balance": {
+   "result": "PASS",
+   "run": "state/run-1793007378-stage5-recovery",
+   "on_return": "ToRecover sweep bf0b347964fb56c2b0089cd528f2e9feb5b411e66e747f1d3b910727f4bfc74e; active 0 to_recover 1000",
+   "recovery_forfeit": "5803eaf40a3743b8ec255382839e01eedc27a76fa40c83ed64028c42ee6b7019",
+   "after": "active 1000 to_recover 0",
+   "note": "first return attempt ran before arkd swept -> Active (correct); rerun passed"
+  },
+  "4_sweep_check": {
+   "result": "PASS",
+   "accepted_recovery": "ad0e16d0ff5d02c392eec3edd54947c1c48d5b3bcaa6b962202b55a604731525",
+   "rejected_non_swept": "6a63d4d39c42a49975106af2ed94913ca765d8912180d152a56b408365de1a95"
+  },
+  "5_fraud": {
+   "result": "PASS (detected, not prevented)",
+   "run": "state/run-1793007195-stage6-fraud",
+   "commitment_1": "1d341b47bc43714af4815510921048c1c7e4e2002bc1f157b0f0f151704c1634",
+   "forfeit_1": "4733f5695205a6e780c2b0e1f05b8f10dac44f1441bacf834577cb03997bac22",
+   "commitment_2": "73b5dc97d42f22182742f1389274a7c72e2ee0b0b56eeb7059ecc7996fd6544e",
+   "forfeit_2": "6ed0d249c5ce377710601af988ef11202b1e071ca302fe6b610e6c71ee3bb541",
+   "fraud_proof_bytes": 5060
+  }
+ },
+ "regressions": {
+  "stage5": "PASS (return rerun)",
+  "stage1": "PASS",
+  "stage0A": "PASS",
+  "stage0B": "PASS",
+  "stage2_refresh": "PASS",
+  "stage2_exit": "PASS",
+  "stage2_neg": "PASS",
+  "stage3_offline_proof": "PASS",
+  "stage4_offline2w": "PASS (rerun after setup expiry race)"
+ },
+ "disk_freed": "~0.4G (2.1G -> 2.5G free)"
+}
