@@ -83,16 +83,20 @@ make app              # or: scripts/app.sh [port]
 | Send off-chain | Checkpoint tx (T1) + ark tx (T2) to the other wallet, with asset change and BTC change back to the sender. The receiver validates **with arkd paused**, from the consignment, the Ark proof and the bitcoin chain only; tampered proofs are rejected first. |
 | Refresh | Move the colored VTXO into a new batch; the forfeit tx carries the transition. |
 | Collaborative exit | Leave to an on-chain output of the commitment tx; the forfeit carries the transition. |
-| Unilateral exit | Broadcast the VTXO's branch without the operator. |
+| Unilateral exit | Broadcast the VTXO's branch without the operator. Other outputs of yours in the same branch go on-chain too: colored ones become `unrolled` holdings, live BTC-only ones can be claimed with *Sweep exited BTC*, and ones you already forfeited or spent off-chain are left alone (they are the operator's / the next tx's). |
+| Sweep exited BTC | Claim those BTC-only outputs to the wallet's on-chain address after the exit delay. |
 | Send on-chain | Spend an exited output (collaborative or unilateral) to the other wallet with an on-chain RGB transfer, carrying the Ark proof of its history. After a unilateral exit this waits out the exit delay (512 s on regtest), mining blocks meanwhile. |
 | Recover swept | Recover a VTXO the operator swept after expiry, asset included. To try it: set the batch expiry to 600 s, issue or refresh, wait until the VTXO shows `swept` (about 10 to 15 min, mine a block now and then), then recover. Set the expiry back to `604672` afterwards. |
 | Mine / Set batch expiry | Regtest time controls: mine blocks, change arkd's `vtxoTreeExpiry` through the admin API (applies to new batches). |
+| Reset | Delete the data dir and start with two fresh wallets. |
 
 The page has a step indicator for the main flow (Board → Issue + jump-in → Send off-chain → Refresh → Exit → Sweep recovery) with a plain-language explanation of each step on hover, and a **Demo mode** button that runs board, issue, both off-chain sends, refresh, collaborative exit and on-chain send end to end (about one minute). Buttons that cannot run say why; the activity log shows one headline per action with its txids (click to copy) and keeps the technical lines, including the tampered-proof checks, folded.
 
 Each wallet shows its off-chain BTC balance, its VTXOs with expiry, the Ark-aware asset balance (active, to recover, unrolled, in flight) next to rgb-lib's stock balance, and the colored outputs the app is tracking. The API is `GET /api/state` and `POST /api/action` with a JSON body such as `{"action":"send","from":"alice","to":"bob","asset_id":"rgb:...","amount":300}`; actions on a colored output accept an optional `"outpoint"` to pick one when a wallet holds several.
 
-Limits: one action runs at a time; wallets live in memory for the session (files under `state/app-<ts>/`), so restarting the app starts with new, empty wallets; regtest only. An off-chain send splits the VTXO's sats in half when there is asset change, so long chains of partial sends eventually need a refresh.
+**Persistence.** Everything lives in a data dir, `state/app-data/` by default (`--data-dir=<path>` or `RGB_ARKADE_APP_DATA` to change it; `state/` is gitignored): wallet keys and mnemonics, the rgb-lib data dirs (RGB stock and Ark registry), consignments and Ark proofs, and `app.json` with the tracked colored outputs and the activity log. Restarting the app reopens the same wallets (Ark contracts are rediscovered from arkd's indexer) and continues where it left off. **Reset** (or deleting the dir while the app is stopped) starts fresh.
+
+Limits: one action runs at a time; regtest only; an action interrupted by a restart is not resumed (its log entry stays open; re-run it). An off-chain send splits the VTXO's sats in half when there is asset change, so long chains of partial sends eventually need a refresh.
 
 ## Scenarios and test suite
 

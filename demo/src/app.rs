@@ -6,7 +6,7 @@ use crate::forfeit::{BatchOp, attest_and_register, colored_batch, fund_onchain, 
 use crate::long_offline::{pay_from_rgb_output, vtxo_info};
 use crate::offchain_transfer::{rgb_hop, wait_vtxo};
 use crate::proof::{ProofFile, add_vtxos, arkd_down, build_proof, import, mark_recovery, negatives, operators, proof_path};
-use crate::{ArkClient, ark_client, bl, board, now, onchain_genesis_jump_in, regtest, rgb_wallet};
+use crate::{ArkClient, ark_client, ark_client_load, bl, board, now, onchain_genesis_jump_in, regtest, rgb_wallet, rgb_wallet_load};
 use anyhow::{anyhow, bail, ensure};
 use ark_bdk_wallet::Wallet as ArkBdkWallet;
 use ark_client::GetVtxosRequestFilter;
@@ -29,7 +29,7 @@ const INDEX: &str = include_str!("../app/index.html");
 const NAMES: [&str; 2] = ["alice", "bob"];
 const EXIT_SAT: u64 = 20_000;
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub(crate) struct Holding {
     asset_id: String,
     amount: u64,
@@ -47,9 +47,22 @@ struct Wallet {
     rgb: RgbWallet,
     online: Online,
     holdings: Vec<Holding>,
+    /// BTC-only outputs of this wallet put on-chain by a unilateral exit (siblings of the exited
+    /// colored VTXO in its branch): claimable through the exit path, swept with `sweep_btc`
+    exited_btc: Vec<String>,
 }
 
-#[derive(Serialize, Clone, Default)]
+/// What the app keeps on disk besides the wallets' own files (`<data dir>/app.json`).
+#[derive(Serialize, Deserialize, Default)]
+struct Saved {
+    seq: u64,
+    holdings: std::collections::BTreeMap<String, Vec<Holding>>,
+    #[serde(default)]
+    exited_btc: std::collections::BTreeMap<String, Vec<String>>,
+    log: Vec<LogEntry>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
 struct LogEntry {
     t: u64,
     action: String,
@@ -126,9 +139,13 @@ enum Action {
     UnilateralExit { who: String, asset_id: String, outpoint: Option<String> },
     OnchainSend { from: String, to: String, asset_id: String, outpoint: Option<String> },
     Recover { who: String, asset_id: String, outpoint: Option<String> },
+    /// spend the BTC-only outputs a unilateral exit put on-chain to the wallet's on-chain address
+    SweepBtc { who: String },
     Mine { blocks: Option<u32> },
     SetExpiry { seconds: u64 },
     Sync,
+    /// delete the data dir and start with fresh wallets
+    Reset,
 }
 
 impl Action {
@@ -142,9 +159,11 @@ impl Action {
             Action::UnilateralExit { who, .. } => format!("{who}: unilateral exit"),
             Action::OnchainSend { from, to, .. } => format!("{from} -> {to}: on-chain send"),
             Action::Recover { who, .. } => format!("{who}: sweep recovery"),
+            Action::SweepBtc { who } => format!("{who}: sweep exited BTC"),
             Action::Mine { blocks } => format!("mine {} block(s)", blocks.unwrap_or(1)),
             Action::SetExpiry { seconds } => format!("set batch expiry {seconds}s"),
             Action::Sync => "sync".into(),
+            Action::Reset => "reset".into(),
         }
     }
 }
@@ -226,7 +245,64 @@ fn set_expiry(seconds: u64) -> anyhow::Result<String> {
 async fn new_wallet(name: &str, regtest: &Arc<Regtest>, state: &Path) -> anyhow::Result<Wallet> {
     let (ark, ark_w) = ark_client(name, regtest.clone(), state).await?;
     let (rgb, online) = bl(|| rgb_wallet(name, state))?;
-    Ok(Wallet { name: name.into(), ark, ark_w, rgb, online, holdings: vec![] })
+    Ok(Wallet { name: name.into(), ark, ark_w, rgb, online, holdings: vec![], exited_btc: vec![] })
+}
+
+/// Reopen a wallet from the data dir: same keys, rgb-lib data (stock + Ark registry), Ark
+/// contracts rediscovered from arkd's indexer.
+async fn load_wallet(name: &str, regtest: &Arc<Regtest>, state: &Path) -> anyhow::Result<Wallet> {
+    let (ark, ark_w) = ark_client_load(name, regtest.clone(), state).await?;
+    let (rgb, online) = bl(|| rgb_wallet_load(name, state))?;
+    Ok(Wallet { name: name.into(), ark, ark_w, rgb, online, holdings: vec![], exited_btc: vec![] })
+}
+
+const SAVED: &str = "app.json";
+
+fn save(c: &Core, shared: &Arc<StdMutex<Shared>>) -> anyhow::Result<()> {
+    let saved = Saved {
+        seq: c.seq,
+        holdings: c.wallets.iter().map(|w| (w.name.clone(), w.holdings.clone())).collect(),
+        exited_btc: c.wallets.iter().map(|w| (w.name.clone(), w.exited_btc.clone())).collect(),
+        log: shared.lock().unwrap().log.clone(),
+    };
+    let tmp = c.state.join(format!("{SAVED}.tmp"));
+    std::fs::write(&tmp, serde_json::to_vec_pretty(&saved)?)?;
+    std::fs::rename(tmp, c.state.join(SAVED))?;
+    Ok(())
+}
+
+/// Outputs of the exit branch that pay one of `w`'s own VTXO scripts, other than `exited`.
+/// Colored ones (live holdings) become `unrolled` holdings; BTC-only ones that are still live
+/// VTXOs are kept for `sweep_btc`; ones already spent off-chain (forfeited in a batch, or spent by
+/// an Arkade tx) belong to the operator / the next tx and are left alone.
+async fn classify_unrolled(w: &mut Wallet, regtest: &Regtest, branch: &[Txid], exited: OutPoint, lg: &Logger) -> anyhow::Result<()> {
+    let own: Vec<bitcoin::ScriptBuf> = w.ark.get_offchain_addresses().await?.iter().map(|(_, v)| v.script_pubkey()).collect();
+    for t in branch {
+        let Some(tx) = regtest.raw_tx(t) else { continue };
+        for (vout, out) in tx.output.iter().enumerate() {
+            let o = OutPoint { txid: *t, vout: vout as u32 };
+            if o == exited || !own.contains(&out.script_pubkey) {
+                continue;
+            }
+            if let Some(h) = w.holdings.iter_mut().find(|h| h.outpoint == o.to_string()) {
+                if h.kind == "vtxo" {
+                    h.kind = "unrolled".into();
+                    lg.info(format!("{o} ({} of the asset) is in the same branch: now on-chain too (unrolled)", h.amount));
+                }
+                continue;
+            }
+            match vtxo_info(o).await {
+                Some(i) if i.is_spent => lg.info(format!("{o} ({}) is in the branch but was already spent off-chain (forfeited / spent by an Arkade tx): not ours to claim, not swept", out.value)),
+                _ => {
+                    lg.info(format!("{o} ({}) is a BTC-only VTXO of {} in the branch: on-chain now, sweepable after the exit delay", out.value, w.name));
+                    if !w.exited_btc.contains(&o.to_string()) {
+                        w.exited_btc.push(o.to_string());
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 // ------------------------------------------------------------------------------------- actions
@@ -406,8 +482,10 @@ async fn run_action(c: &mut Core, a: &Action, lg: &Logger) -> anyhow::Result<()>
             let v = OutPoint::from_str(&h.outpoint)?;
             let cid = ContractId::from_str(&asset_id).map_err(|e| anyhow!("{e}"))?;
             let exit_addr = Address::from_str(&bl(|| w.rgb.get_address())?)?.assume_checked();
-            lg.info(format!("collaborative exit of {v} to {exit_addr} ({EXIT_SAT} sat); the forfeit commits T: {v} -> commitment-tx output"));
-            let (commit, fc) = match colored_batch(&who, &w.ark, &w.rgb, cid, v, h.amount, BatchOp::Exit(exit_addr, Amount::from_sat(EXIT_SAT))).await {
+            // exit EXIT_SAT, or the whole VTXO when it holds less (e.g. change after a few sends)
+            let exit_sat = vtxo_info(v).await.map(|i| i.amount.to_sat()).unwrap_or(EXIT_SAT).min(EXIT_SAT);
+            lg.info(format!("collaborative exit of {v} to {exit_addr} ({exit_sat} sat); the forfeit commits T: {v} -> commitment-tx output"));
+            let (commit, fc) = match colored_batch(&who, &w.ark, &w.rgb, cid, v, h.amount, BatchOp::Exit(exit_addr, Amount::from_sat(exit_sat))).await {
                 Ok(x) => x,
                 Err(e) => {
                     w.holdings.push(h);
@@ -446,7 +524,40 @@ async fn run_action(c: &mut Core, a: &Action, lg: &Logger) -> anyhow::Result<()>
             }
             let _ = bl(|| w.rgb.update_witnesses(w.online.clone(), 0, vec![]));
             w.holdings[i].kind = "unrolled".into();
+            classify_unrolled(w, &regtest, &branch, v, lg).await?;
             lg.push("ok", format!("{who}: {v} is on-chain; spendable after the exit delay (on-chain send mines blocks until then)"));
+        }
+        Action::SweepBtc { who } => {
+            let w = &mut c.wallets[idx(&who)?];
+            ensure!(!w.exited_btc.is_empty(), "{who} has no exited BTC-only output");
+            let outs: Vec<OutPoint> = w.exited_btc.iter().map(|o| OutPoint::from_str(o)).collect::<Result<_, _>>()?;
+            let total: u64 = outs.iter().filter_map(|o| regtest.raw_tx(&o.txid).map(|t| t.output[o.vout as usize].value.to_sat())).sum();
+            let fee = 600u64;
+            ensure!(total > fee + 330, "{total} sat: too little to sweep");
+            let to = w.ark.get_onchain_address()?;
+            lg.info(format!("spend {} exited BTC-only output(s) ({total} sat) to {who}'s on-chain address {to} (mines blocks until the exit delay has passed)", outs.len()));
+            let mut tx = None;
+            for attempt in 0..120 {
+                match w.ark.create_send_on_chain_transaction_with_hook(to.clone(), Amount::from_sat(total - fee), vec![], Amount::from_sat(fee), &outs, |_| Ok(())).await {
+                    Ok((t, _)) => {
+                        tx = Some(t);
+                        break;
+                    }
+                    Err(e) => {
+                        if attempt % 6 == 0 {
+                            lg.info(format!("not spendable yet (attempt {attempt}): {e}"));
+                        }
+                        regtest::mine(1)?;
+                        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    }
+                }
+            }
+            let tx = tx.ok_or_else(|| anyhow!("exited outputs never became spendable"))?;
+            let txid = regtest.send_raw(&tx)?;
+            regtest::mine(1)?;
+            lg.tx("sweep tx", txid);
+            w.exited_btc.clear();
+            lg.push("ok", format!("{who}: {} sat back in the on-chain wallet", total - fee));
         }
         Action::OnchainSend { from, to, asset_id, outpoint } => {
             let (fi, ti) = (idx(&from)?, idx(&to)?);
@@ -464,7 +575,8 @@ async fn run_action(c: &mut Core, a: &Action, lg: &Logger) -> anyhow::Result<()>
                 spend_exited(&from, &f.ark, &f.rgb, &regtest, o, &addr, cid, h.amount, b, &cons).await
             } else {
                 lg.info(format!("spend {o} (rgb-lib output) to {to}"));
-                pay_from_rgb_output(&from, &mut f.rgb, &f.online, &regtest, o, EXIT_SAT, cid, h.amount, script, b, &cons).await
+                let value = regtest.raw_tx(&o.txid).and_then(|t| t.output.get(o.vout as usize).map(|x| x.value.to_sat())).unwrap_or(EXIT_SAT);
+                pay_from_rgb_output(&from, &mut f.rgb, &f.online, &regtest, o, value, cid, h.amount, script, b, &cons).await
             };
             let txid = match res {
                 Ok(x) => x,
@@ -495,6 +607,7 @@ async fn run_action(c: &mut Core, a: &Action, lg: &Logger) -> anyhow::Result<()>
             lg.push("ok", format!("new batches expire after {seconds}s"));
         }
         Action::Sync => {}
+        Action::Reset => bail!("reset is handled by the worker"),
     }
     Ok(())
 }
@@ -610,6 +723,7 @@ async fn wallet_view(w: &Wallet, regtest: &Regtest) -> serde_json::Value {
         "vtxos": vtxos,
         "assets": assets,
         "holdings": holdings,
+        "exited_btc": w.exited_btc,
     })
 }
 
@@ -650,23 +764,47 @@ async fn post_action(State(app): State<AppState>, Json(a): Json<Action>) -> impl
     (StatusCode::ACCEPTED, Json(serde_json::json!({"ok": true, "started": label})))
 }
 
+/// Data dir: `--data-dir=<path>`, else `$RGB_ARKADE_APP_DATA`, else `state/app-data`.
+fn data_dir() -> PathBuf {
+    std::env::args()
+        .find_map(|a| a.strip_prefix("--data-dir=").map(PathBuf::from))
+        .or_else(|| std::env::var_os("RGB_ARKADE_APP_DATA").map(PathBuf::from))
+        .unwrap_or_else(|| crate::paths::state().join("app-data"))
+}
+
 async fn init(shared: &Arc<StdMutex<Shared>>) -> anyhow::Result<Core> {
-    let state = crate::paths::state().join(format!("app-{}", now()));
+    init_in(shared, data_dir()).await
+}
+
+/// Open the wallets in `state` if it holds them (app restart), else create fresh ones there.
+async fn init_in(shared: &Arc<StdMutex<Shared>>, state: PathBuf) -> anyhow::Result<Core> {
     std::fs::create_dir_all(&state)?;
     shared.lock().unwrap().state_dir = state.display().to_string();
     let regtest = Arc::new(Regtest::new());
     let lg = Logger { shared: shared.clone(), action: "startup".into() };
+    let existing = state.join(format!("{}-ark-seed.hex", NAMES[0])).exists();
+    let saved: Saved = match std::fs::read(state.join(SAVED)) {
+        Ok(b) if existing => serde_json::from_slice(&b)?,
+        _ => Saved::default(),
+    };
+    if existing {
+        shared.lock().unwrap().log = saved.log;
+    }
     let mut wallets = vec![];
     for n in NAMES {
-        wallets.push(new_wallet(n, &regtest, &state).await?);
-        lg.info(format!("wallet {n} ready (Ark client + rgb-lib wallet in {})", state.display()));
+        let mut w = if existing { load_wallet(n, &regtest, &state).await? } else { new_wallet(n, &regtest, &state).await? };
+        w.holdings = saved.holdings.get(n).cloned().unwrap_or_default();
+        w.exited_btc = saved.exited_btc.get(n).cloned().unwrap_or_default();
+        lg.info(format!("wallet {n} {} (Ark client + rgb-lib wallet in {})", if existing { "reloaded" } else { "created" }, state.display()));
+        wallets.push(w);
     }
     let info = wallets[0].ark.server_info().await?;
     shared.lock().unwrap().arkd = serde_json::json!({
         "version": info.version, "signer": info.signer_pk.to_string(), "dust": info.dust.to_sat(),
         "unilateral_exit_delay": format!("{:?}", info.unilateral_exit_delay),
     });
-    let core = Core { state, regtest, ops: operators(&info), wallets, seq: 0 };
+    let core = Core { state, regtest, ops: operators(&info), wallets, seq: saved.seq };
+    save(&core, shared)?;
     refresh_views(&core, shared).await;
     Ok(core)
 }
@@ -688,11 +826,41 @@ fn worker(shared: Arc<StdMutex<Shared>>, rx: std::sync::mpsc::Receiver<Action>, 
         };
         while let Ok(a) = tokio::task::block_in_place(|| rx.recv()) {
             let label = a.label();
+            if matches!(a, Action::Reset) {
+                let dir = core.state.clone();
+                drop(core);
+                let r = std::fs::remove_dir_all(&dir);
+                shared.lock().unwrap().log.clear();
+                core = loop {
+                    match init_in(&shared, dir.clone()).await {
+                        Ok(c) => break c,
+                        Err(e) => {
+                            Logger { shared: shared.clone(), action: "startup".into() }.push("error", format!("{e:#}"));
+                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        }
+                    }
+                };
+                let lg = Logger { shared: shared.clone(), action: label.clone() };
+                lg.push("start", label.clone());
+                match r {
+                    Ok(()) => {
+                        lg.push("ok", format!("deleted {} and started fresh wallets", dir.display()));
+                        lg.push("done", label.clone());
+                    }
+                    Err(e) => lg.push("error", format!("could not delete {}: {e}", dir.display())),
+                }
+                let _ = save(&core, &shared);
+                shared.lock().unwrap().busy = None;
+                continue;
+            }
             let lg = Logger { shared: shared.clone(), action: label.clone() };
             lg.push("start", label.clone());
             match run_action(&mut core, &a, &lg).await {
                 Ok(()) => lg.push("done", label.clone()),
                 Err(e) => lg.push("error", format!("{e:#}")),
+            }
+            if let Err(e) = save(&core, &shared) {
+                lg.push("error", format!("saving app state: {e:#}"));
             }
             refresh_views(&core, &shared).await;
             shared.lock().unwrap().busy = None;
@@ -719,5 +887,61 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
     println!("rgb-arkade app on http://127.0.0.1:{port}");
     axum::serve(listener, router).await?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------- regression
+
+fn holding_out(c: &Core, who: &str, asset_id: &str, amount: u64, kind: &str) -> anyhow::Result<String> {
+    c.wallets[idx(who)?]
+        .holdings
+        .iter()
+        .find(|h| h.asset_id == asset_id && h.amount == amount && h.kind == kind)
+        .map(|h| h.outpoint.clone())
+        .ok_or_else(|| anyhow!("{who} has no {kind} holding of {amount}"))
+}
+
+/// Scenario `multihop-exit` (regression): the app flows, headless. An asset goes through two
+/// off-chain hops (Alice -> Bob -> Alice), Alice exits her 700 change collaboratively (that VTXO is
+/// forfeited), then unilaterally exits the 100 she got back and spends it on-chain. Unrolling the
+/// 100 also puts the parent Arkade tx on-chain, whose forfeited 700 change output pays Alice's own
+/// VTXO script and matures first: the exit spend must still spend the colored output.
+pub async fn run_multihop_exit() -> anyhow::Result<()> {
+    let shared = Arc::new(StdMutex::new(Shared::default()));
+    let dir = crate::paths::state().join(format!("run-{}-multihop-exit", now()));
+    println!("state dir {}", dir.display());
+    let mut core = init_in(&shared, dir).await?;
+    let act = async |core: &mut Core, a: Action| -> anyhow::Result<()> {
+        let lg = Logger { shared: shared.clone(), action: a.label() };
+        crate::step(&a.label());
+        run_action(core, &a, &lg).await.map_err(|e| e.context(a.label()))
+    };
+    let (alice, bob) = ("alice".to_string(), "bob".to_string());
+    act(&mut core, Action::Board { who: alice.clone(), sats: None }).await?;
+    act(&mut core, Action::Board { who: bob.clone(), sats: None }).await?;
+    act(&mut core, Action::Issue { who: alice.clone() }).await?;
+    let a = core.wallets[0].holdings[0].asset_id.clone();
+    act(&mut core, Action::Send { from: alice.clone(), to: bob.clone(), asset_id: a.clone(), amount: 300, sats: None, outpoint: None }).await?;
+    let back = holding_out(&core, "bob", &a, 300, "vtxo")?;
+    act(&mut core, Action::Send { from: bob.clone(), to: alice.clone(), asset_id: a.clone(), amount: 100, sats: None, outpoint: Some(back) }).await?;
+    let change = holding_out(&core, "alice", &a, 700, "vtxo")?;
+    act(&mut core, Action::CollabExit { who: alice.clone(), asset_id: a.clone(), outpoint: Some(change.clone()) }).await?;
+    let v = holding_out(&core, "alice", &a, 100, "vtxo")?;
+    println!("multihop_exit_vtxo = {v} (parent Arkade tx also holds alice's forfeited change {change})");
+    act(&mut core, Action::UnilateralExit { who: alice.clone(), asset_id: a.clone(), outpoint: Some(v.clone()) }).await?;
+    let r = act(&mut core, Action::OnchainSend { from: alice.clone(), to: bob.clone(), asset_id: a.clone(), outpoint: Some(v.clone()) }).await;
+    let spend_ok = r.is_ok();
+    if let Err(e) = &r {
+        println!("on-chain spend of the unrolled VTXO FAILED: {e:#}");
+    }
+    let view = wallet_view(&core.wallets[0], &core.regtest).await;
+    let ark = view["assets"].as_array().and_then(|l| l.iter().find(|x| x["asset_id"] == a.as_str())).map(|x| x["ark"].clone()).unwrap_or_default();
+    println!("alice Ark balance after the exit spend: {ark}");
+    let unrolled_clear = ark["unrolled"].as_u64() == Some(0);
+    let bob_has = core.wallets[1].holdings.iter().any(|h| h.asset_id == a && h.kind == "onchain" && h.amount == 100);
+    println!("check_exit_spend_ok = {spend_ok}\ncheck_unrolled_balance_cleared = {unrolled_clear}\ncheck_bob_holds_100_onchain = {bob_has}");
+    let pass = spend_ok && unrolled_clear && bob_has;
+    println!("\nMULTIHOP-EXIT RESULT: {}", if pass { "PASS" } else { "FAIL" });
+    ensure!(pass, "multihop-exit failed");
     Ok(())
 }
