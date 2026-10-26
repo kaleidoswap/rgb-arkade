@@ -384,7 +384,16 @@ async fn receive_with_attestation(
         attest_and_register(who, client, rgb, regtest, fc, vtxo, commitment).await?;
         None
     };
-    let r = bl(|| rgb.validate_consignment_ark(online.clone(), cons.to_path_buf(), true));
+    // the indexer behind the resolver (Fulcrum) can lag a few seconds behind a just-mined spend
+    let mut r = bl(|| rgb.validate_consignment_ark(online.clone(), cons.to_path_buf(), true));
+    for i in 1..10 {
+        if !matches!(r, Err(rgb_lib::Error::Network { .. })) {
+            break;
+        }
+        println!("[{who}] resolver not caught up yet (attempt {i}): {r:?}");
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        r = bl(|| rgb.validate_consignment_ark(online.clone(), cons.to_path_buf(), true));
+    }
     println!("[{who}] Ark-aware resolver after attestation: {r:?}");
     rec(&format!("{who}_attested_validates"), r.is_ok().to_string());
     r?;

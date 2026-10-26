@@ -15,7 +15,7 @@ Everything here was measured on regtest (arkd v0.9.15 + the patch set, rust-sdk 
 | Bob → Carol (on-chain) | `12bfea3f9b334bcabfa52b18a3395316baf7f295e5622cd8b46401047564a731` |
 | Carol's balance | `settled: 1000, future: 1000, spendable: 1000` |
 
-The "issuance on a VTXO" flow also passed (run6, ark tx `30789e00…a21b`, Bob → Carol `7aa8cd5d…e29f`). Logs and consignments are in `/workspace/rgb-arkade` on the box.
+The "issuance on a VTXO" flow also passed (run6, ark tx `30789e00…a21b`, Bob → Carol `7aa8cd5d…e29f`). Logs and consignments were kept locally, outside the repository.
 
 ## offchain-transfer
 
@@ -171,3 +171,10 @@ Rerun on 2026-10-26 (CET) with the renamed CLI, against the live regtest stack (
 | `make patches-check` | OK | All 4 patches apply on their pinned commits |
 
 Not rerun after the rename: `basic`, `basic-onchain-genesis`, `refresh`, `multi-user`, `failed-batch`, `fraud`, and the orchestrated `sweep-recovery`, `long-offline` and `exit-watchtower`, plus `bench.sh`. Their results above come from the same code before the rename.
+
+### Consolidation (26 Oct 2026, CET)
+
+- **multihop-exit** (new regression: board, issue, send 300, send 100 back, collaborative exit of the 700 change, unilateral exit of the 100, on-chain send). Before the exact-input fix: FAIL (16:52–17:01, "spend does not include the RGB output"; the forfeited change output of the same Arkade tx matured first and was picked alone). After: PASS (17:01–17:11 and in run-all, 19:35–19:45).
+- **App persistence** (API-driven, 17:12–17:25): three app restarts mid-flow reloaded identical state (holdings, unrolled exit, exited BTC); on-chain sends both ways, BTC sweep and reset OK; Ark `unrolled` back to 0 after the exit spend.
+- **Fresh stack** (after a host reboot lost Docker): `scripts/setup.sh` rebuilt `arkd:rgb`; `scripts/app.sh` brought regtest up from a stopped stack (18:39–18:41) and the app boarded a wallet at 18:42.
+- **run-all quick** (18:42–19:45): basic, basic-onchain-genesis, offchain-transfer, offchain-transfer `--offline-proof`, collab-exit, forfeit-negatives, multi-user, failed-batch, fraud, multihop-exit PASS; refresh FAIL (19:30), FAIL again alone (19:56): the receiver validated right after the spend was mined and Fulcrum had not indexed it yet. With a retry on the resolver's network error (as the app already does): PASS (19:58–20:08).
