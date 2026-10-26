@@ -205,7 +205,7 @@ pub async fn return_user(dir: PathBuf) -> anyhow::Result<()> {
     let recv = bl(|| dave.witness_receive(None, Assignment::Fungible(ISSUE_AMOUNT), now() + 86_400, vec![], 1))?;
     let to = rgb_lib::utils::script_buf_from_recipient_id(recv.recipient_id.clone())?.ok_or_else(|| anyhow!("not witness"))?;
     let cons = out.join("alice_to_dave.rgbc");
-    let ad = pay_from_rgb_output("alice", &mut rgb, &online, &regtest, fc2.target, EXIT_SAT, cid, to, 7777, &cons).await?;
+    let ad = pay_from_rgb_output("alice", &mut rgb, &online, &regtest, fc2.target, EXIT_SAT, cid, ISSUE_AMOUNT, to, 7777, &cons).await?;
     rec("alice_to_dave_txid", ad.to_string());
     let st = build_proof(&alice, &regtest, &[fid, fid2, ad], &[proof_path(&own2)], &proof_path(&cons)).await?;
     let pf: crate::proof::ProofFile = serde_json::from_str(&std::fs::read_to_string(proof_path(&cons))?)?;

@@ -11,6 +11,7 @@ It is made of small patches to arkd, the Ark rust-sdk and rgb-lib (KaleidoSwap f
 - [Architecture](#architecture)
 - [How it works](#how-it-works)
 - [Quickstart](#quickstart)
+- [Prototype app](#prototype-app)
 - [Scenarios and test suite](#scenarios-and-test-suite)
 - [Status and limitations](#status-and-limitations)
 - [Security model](#security-model)
@@ -29,6 +30,7 @@ Further reading: [docs/design.md](docs/design.md) (full design, atomic swap theo
 | rust-sdk patches | `patches/rust-sdk.patch` on rust-sdk `v0.12.0` | Client side of the above: checkpoint payload, forfeit hooks for refresh / collaborative exit / recovery, exit hooks, forfeit and connector lookups. |
 | rgb-lib Ark module | `patches/rgb-lib.patch` on kaleidoswap/rgb-lib `8852b2e` (`src/ark_proof.rs` + wallet methods) | Coloring PSBTs with seals on VTXOs/checkpoints, Ark-aware validation of unmined witnesses, self-contained Ark proofs, VTXO status and Ark balance, rollback of failed transfers, fraud proofs. |
 | Demo / CLI | `demo/` (`ark-rgb-demo`) | Wallet-side flows for every feature (`scenario <name>`), negative tests, benchmarks. |
+| Prototype app | `ark-rgb-demo app` (`demo/src/app.rs`, `demo/app/index.html`) | Local web UI: two wallets side by side driving the same flows by hand. |
 | Watchtower | `ark-rgb-demo watchtowerd <dir>` (`demo/src/watchtowerd.rs`) | Optional keyless exit watchtower: holds the user's presigned exit branch and fee ladder, never a user key. |
 | Regtest stack | `arkade-regtest` (pinned) + `patches/arkade-regtest.*`, `pools/` | bitcoind, electrs/esplora, `arkd:rgb`, arkd-wallet; offline mempool pools mirror. |
 
@@ -62,6 +64,33 @@ make test         # quick regression suite
 Paths: everything (state, logs, regtest checkout, watchtower data) lives under the repository root, or under `$RGB_ARKADE_DIR` if set. The scripts use `$CARGO_TARGET_DIR` if you build the demo elsewhere. Each run writes `state/run-<ts>-<scenario>/` (wallets, consignments, proofs, `summary.json`) and prints a `... RESULT: PASS` line.
 
 Docker networking: on hosts where the iptables FORWARD policy is DROP, containers on the regtest network need `iptables -I FORWARD 1 -s 172.16.0.0/12 -d 172.16.0.0/12 -j ACCEPT`.
+
+## Prototype app
+
+A local web app to try the features by hand: two wallets (alice and bob) side by side on the regtest stack, with buttons for every flow and a timeline of what happened, txids included.
+
+```bash
+make app              # or: scripts/app.sh [port]
+# open http://127.0.0.1:8080
+```
+
+`make app` starts the regtest stack if arkd does not answer, builds the demo and serves the app on `127.0.0.1` (port 8080, or `PORT=...`). The app is a subcommand of the demo binary (`ark-rgb-demo app [port]`): an axum backend that reuses the scenario code, and a single static page with no build step.
+
+| Action | What happens |
+|---|---|
+| Board BTC | Faucet to the wallet's boarding address and settle it into a batch: a BTC-only VTXO. |
+| Issue asset + jump-in | Issue an NIA on-chain with stock rgb-lib, then move it with an on-chain RGB transfer onto one of the wallet's VTXOs. |
+| Send off-chain | Checkpoint tx (T1) + ark tx (T2) to the other wallet, with asset change and BTC change back to the sender. The receiver validates **with arkd paused**, from the consignment, the Ark proof and the bitcoin chain only; tampered proofs are rejected first. |
+| Refresh | Move the colored VTXO into a new batch; the forfeit tx carries the transition. |
+| Collaborative exit | Leave to an on-chain output of the commitment tx; the forfeit carries the transition. |
+| Unilateral exit | Broadcast the VTXO's branch without the operator. |
+| Send on-chain | Spend an exited output (collaborative or unilateral) to the other wallet with an on-chain RGB transfer, carrying the Ark proof of its history. After a unilateral exit this waits out the exit delay (512 s on regtest), mining blocks meanwhile. |
+| Recover swept | Recover a VTXO the operator swept after expiry, asset included. To try it: set the batch expiry to 600 s, issue or refresh, wait until the VTXO shows `swept` (about 10 to 15 min, mine a block now and then), then recover. Set the expiry back to `604672` afterwards. |
+| Mine / Set batch expiry | Regtest time controls: mine blocks, change arkd's `vtxoTreeExpiry` through the admin API (applies to new batches). |
+
+Each wallet shows its off-chain BTC balance, its VTXOs with expiry, the Ark-aware asset balance (active, to recover, unrolled, in flight) next to rgb-lib's stock balance, and the colored outputs the app is tracking. The API is `GET /api/state` and `POST /api/action` with a JSON body such as `{"action":"send","from":"alice","to":"bob","asset_id":"rgb:...","amount":300}`.
+
+Limits: one action runs at a time; wallets live in memory for the session (files under `state/app-<ts>/`), so restarting the app starts with new, empty wallets; regtest only. An off-chain send splits the VTXO's sats in half when there is asset change, so long chains of partial sends eventually need a refresh.
 
 ## Scenarios and test suite
 
@@ -131,13 +160,13 @@ More in [docs/design.md](docs/design.md#security-model).
 |---|---|
 | `PATCHES.md`, `patches/` | One cumulative patch per upstream repo (arkd, rust-sdk, rgb-lib, arkade-regtest) plus the regtest `.env` |
 | `arkd-image/Dockerfile` | `arkd:rgb` = upstream arkd image with the patched binary |
-| `demo/` | `ark-rgb-demo`: `src/main.rs` (CLI), `common.rs` (wallet/client helpers), `paths.rs`, one module per feature (`basic`, `offchain_transfer`, `forfeit`, `proof`, `exit_watchtower`, `long_offline`, `watchtowerd`, `sweep_recovery`, `batch_scenarios`, `bench`), `regtest.rs` |
-| `scripts/` | `setup.sh`, `regtest-up.sh`, `run-scenario.sh`, `run-all.sh`, `bench.sh`, `patches-check.sh`, `lib.sh` |
+| `demo/` | `ark-rgb-demo`: `src/main.rs` (CLI), `common.rs` (wallet/client helpers), `paths.rs`, one module per feature (`basic`, `offchain_transfer`, `forfeit`, `proof`, `exit_watchtower`, `long_offline`, `watchtowerd`, `sweep_recovery`, `batch_scenarios`, `bench`), `regtest.rs`; `src/app.rs` + `app/index.html` (prototype app) |
+| `scripts/` | `setup.sh`, `regtest-up.sh`, `app.sh`, `run-scenario.sh`, `run-all.sh`, `bench.sh`, `patches-check.sh`, `lib.sh` |
 | `tools/arkdb-sim/` | Test tool that plays a colluding operator editing its own sqlite DB (built into `tools/arkdb`) |
 | `bench/` | Fits and USDt-like extrapolation for the benchmark output |
 | `pools/` | Offline mirror of mempool's `pools-v2.json` |
 | `docs/` | `design.md`, `test-results.md` |
-| `Makefile` | `setup`, `build`, `regtest-up`, `scenario`, `test`, `test-all`, `bench`, `patches-check` |
+| `Makefile` | `setup`, `build`, `regtest-up`, `app`, `scenario`, `test`, `test-all`, `bench`, `patches-check` |
 
 Generated, not committed: `vendor/`, `arkade-regtest/`, `state/`, `logs/`, `watchtowerd/`, `tools/arkdb`, `arkd-image/arkd`, `demo/target/`.
 

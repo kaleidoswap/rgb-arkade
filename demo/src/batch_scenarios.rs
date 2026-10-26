@@ -59,7 +59,7 @@ fn bal_str(b: &rgb_lib::ark_proof::ArkAssetBalance) -> String {
 }
 
 /// Owner-side proof for a forfeit `fid` (carrying `carried`), tracking the new VTXO `target`.
-async fn forfeit_proof(client: &ArkClient, regtest: &Regtest, fc: &ForfeitColoring, carried: &[PathBuf], cons: &Path) -> anyhow::Result<PathBuf> {
+pub(crate) async fn forfeit_proof(client: &ArkClient, regtest: &Regtest, fc: &ForfeitColoring, carried: &[PathBuf], cons: &Path) -> anyhow::Result<PathBuf> {
     fc.transfer.save_file(cons).map_err(|e| anyhow!("save: {e}"))?;
     let p = proof_path(cons);
     let mut ws: Vec<Txid> = vec![];

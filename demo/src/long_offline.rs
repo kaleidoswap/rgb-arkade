@@ -208,6 +208,7 @@ pub(crate) async fn pay_from_rgb_output(
     o: OutPoint,
     value: u64,
     contract_id: ContractId,
+    asset_amount: u64,
     to: bitcoin::ScriptBuf,
     blinding: u64,
     cons: &Path,
@@ -241,7 +242,7 @@ pub(crate) async fn pay_from_rgb_output(
     };
     let mut psbt = Psbt::from_unsigned_tx(unsigned)?;
     psbt.inputs[0] = input;
-    let t = bl(|| rgb.color_psbt_and_consume_custom(&mut psbt, contract_id, vec![(SealTarget::WitnessVout(1), ISSUE_AMOUNT, blinding)]))?;
+    let t = bl(|| rgb.color_psbt_and_consume_custom(&mut psbt, contract_id, vec![(SealTarget::WitnessVout(1), asset_amount, blinding)]))?;
     t.save_file(cons).map_err(|e| anyhow!("save: {e}"))?;
     let signed = Psbt::from_str(&bl(|| rgb.sign_psbt(psbt.to_string(), None))?)?;
     let tx = signed.extract_tx().map_err(|e| anyhow!("extract: {e}"))?;
@@ -326,7 +327,7 @@ pub async fn return_user(who: &str, dir: PathBuf) -> anyhow::Result<()> {
             let recv = bl(|| dave.witness_receive(None, Assignment::Fungible(ISSUE_AMOUNT), now() + 86_400, vec![], 1))?;
             let to = rgb_lib::utils::script_buf_from_recipient_id(recv.recipient_id.clone())?.ok_or_else(|| anyhow!("not witness"))?;
             let cons = out.join("alice_to_dave.rgbc");
-            let ad = pay_from_rgb_output("alice", &mut rgb, &online, &regtest, fc.target, EXIT_SAT, cid, to, 4242, &cons).await?;
+            let ad = pay_from_rgb_output("alice", &mut rgb, &online, &regtest, fc.target, EXIT_SAT, cid, ISSUE_AMOUNT, to, 4242, &cons).await?;
             rec("alice_to_dave_txid", ad.to_string());
             let st = crate::proof::build_proof(&client, &regtest, &[fid, ad], &[], &crate::proof::proof_path(&cons)).await?;
             rec("proof_ad", format!("{} B, {} PSBTs", st.bytes, st.n_psbts));

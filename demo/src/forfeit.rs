@@ -230,7 +230,7 @@ async fn attest_forfeit(
     Ok(bitcoin::consensus::encode::serialize_hex(forfeit))
 }
 
-async fn attest_and_register(
+pub(crate) async fn attest_and_register(
     who: &str,
     client: &ArkClient,
     rgb: &RgbWallet,
@@ -245,7 +245,7 @@ async fn attest_and_register(
     Ok(())
 }
 
-async fn fund_onchain(who: &str, client: &ArkClient, w: &ArkBdkWallet) -> anyhow::Result<()> {
+pub(crate) async fn fund_onchain(who: &str, client: &ArkClient, w: &ArkBdkWallet) -> anyhow::Result<()> {
     regtest::faucet(&client.get_onchain_address()?, ONCHAIN_BTC)?;
     for _ in 0..40 {
         w.sync().await?;
@@ -258,7 +258,7 @@ async fn fund_onchain(who: &str, client: &ArkClient, w: &ArkBdkWallet) -> anyhow
 }
 
 /// Unilateral exit of the branch ending in `last_txid`; returns the branch txids.
-async fn unilateral_exit(who: &str, client: &ArkClient, w: &ArkBdkWallet, last_txid: Txid) -> anyhow::Result<Vec<Txid>> {
+pub(crate) async fn unilateral_exit(who: &str, client: &ArkClient, w: &ArkBdkWallet, last_txid: Txid) -> anyhow::Result<Vec<Txid>> {
     let branch = client
         .build_unilateral_exit_trees()
         .await?

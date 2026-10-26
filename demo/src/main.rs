@@ -5,6 +5,7 @@
 //!   ark-rgb-demo watchtowerd <dir>
 //!   ark-rgb-demo bench <dir> <phase> <n> [--pause]
 //!   ark-rgb-demo list
+mod app;
 mod basic;
 mod batch_scenarios;
 mod bench;
@@ -42,7 +43,7 @@ const SCENARIOS: &[(&str, &str, &str)] = &[
 ];
 
 fn usage() -> anyhow::Result<()> {
-    println!("usage: ark-rgb-demo scenario <name> [args] [--offline-proof] | watchtowerd <dir> | bench <dir> <phase> <n> [--pause] | list\n");
+    println!("usage: ark-rgb-demo scenario <name> [args] [--offline-proof] | app [port] | watchtowerd <dir> | bench <dir> <phase> <n> [--pause] | list\n");
     println!("scenarios:");
     for (n, a, d) in SCENARIOS {
         println!("  {:<24} {:<22} {d}", n, a);
@@ -86,6 +87,7 @@ async fn main() -> anyhow::Result<()> {
                 anyhow::bail!("unknown scenario {other}")
             }
         },
+        Some("app") => app::run(args.get(1).map(|p| p.parse()).transpose()?.unwrap_or(8080)).await,
         Some("watchtowerd") => watchtowerd::run_daemon(PathBuf::from(arg(1)?)).await,
         Some("bench") => bench::run(PathBuf::from(arg(1)?), &arg(2)?, arg(3)?.parse()?).await,
         _ => usage(),

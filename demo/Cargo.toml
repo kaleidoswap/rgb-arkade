@@ -23,6 +23,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
 base64 = "0.22"
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 minreq = { version = "2", features = ["json-using-serde"] }
 
 [profile.dev]
