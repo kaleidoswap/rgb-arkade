@@ -928,6 +928,10 @@ pub async fn run_multihop_exit() -> anyhow::Result<()> {
     act(&mut core, Action::CollabExit { who: alice.clone(), asset_id: a.clone(), outpoint: Some(change.clone()) }).await?;
     let v = holding_out(&core, "alice", &a, 100, "vtxo")?;
     println!("multihop_exit_vtxo = {v} (parent Arkade tx also holds alice's forfeited change {change})");
+    let forfeit_txid = shared.lock().unwrap().log.iter().rev()
+        .find_map(|e| e.msg.strip_prefix("forfeit tx (carries the RGB transition): ").map(str::to_string))
+        .ok_or_else(|| anyhow!("collab exit logged no forfeit tx"))?;
+    let h0 = core.regtest.height();
     act(&mut core, Action::UnilateralExit { who: alice.clone(), asset_id: a.clone(), outpoint: Some(v.clone()) }).await?;
     let r = act(&mut core, Action::OnchainSend { from: alice.clone(), to: bob.clone(), asset_id: a.clone(), outpoint: Some(v.clone()) }).await;
     let spend_ok = r.is_ok();
@@ -939,9 +943,40 @@ pub async fn run_multihop_exit() -> anyhow::Result<()> {
     println!("alice Ark balance after the exit spend: {ark}");
     let unrolled_clear = ark["unrolled"].as_u64() == Some(0);
     let bob_has = core.wallets[1].holdings.iter().any(|h| h.asset_id == a && h.kind == "onchain" && h.amount == 100);
-    println!("check_exit_spend_ok = {spend_ok}\ncheck_unrolled_balance_cleared = {unrolled_clear}\ncheck_bob_holds_100_onchain = {bob_has}");
-    let pass = spend_ok && unrolled_clear && bob_has;
+    // the unroll also put alice's forfeited change on-chain: the operator must react to the fraud
+    // by broadcasting the (colored) forfeit tx stored for it, which spends that output
+    let reacted = operator_forfeit_spend(&core.regtest, h0, &change).await?;
+    println!("forfeited change {change}: spent on-chain by {reacted:?} (stored forfeit {forfeit_txid})");
+    let operator_claimed = reacted.as_deref() == Some(forfeit_txid.as_str());
+    println!("check_exit_spend_ok = {spend_ok}\ncheck_unrolled_balance_cleared = {unrolled_clear}\ncheck_bob_holds_100_onchain = {bob_has}\ncheck_operator_broadcast_forfeit = {operator_claimed}");
+    let pass = spend_ok && unrolled_clear && bob_has && operator_claimed;
     println!("\nMULTIHOP-EXIT RESULT: {}", if pass { "PASS" } else { "FAIL" });
     ensure!(pass, "multihop-exit failed");
     Ok(())
+}
+
+/// Txid of the confirmed tx (above height `from`) spending `outpoint`, mining a few blocks while
+/// the operator reacts; None if it stays unspent.
+async fn operator_forfeit_spend(regtest: &crate::regtest::Regtest, from: u64, outpoint: &str) -> anyhow::Result<Option<String>> {
+    let (txid, vout) = outpoint.split_once(':').ok_or_else(|| anyhow!("bad outpoint {outpoint}"))?;
+    let vout: u64 = vout.parse()?;
+    for _ in 0..12 {
+        let unspent = regtest.rpc("gettxout", serde_json::json!([txid, vout, false]))?;
+        if unspent.is_null() {
+            for h in from..=regtest.height() {
+                let hash = regtest.rpc("getblockhash", serde_json::json!([h]))?;
+                let block = regtest.rpc("getblock", serde_json::json!([hash, 2]))?;
+                for tx in block["tx"].as_array().into_iter().flatten() {
+                    let spends = tx["vin"].as_array().into_iter().flatten()
+                        .any(|i| i["txid"].as_str() == Some(txid) && i["vout"].as_u64() == Some(vout));
+                    if spends {
+                        return Ok(tx["txid"].as_str().map(str::to_string));
+                    }
+                }
+            }
+        }
+        crate::regtest::mine(1)?;
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    }
+    Ok(None)
 }
