@@ -117,6 +117,7 @@ Limits: one action runs at a time; regtest only; an action interrupted by a rest
 | `sweep-recovery [offline_s]` | sweep recovery, Ark balance, sweep check | Offline past the sweep; recovery of BTC + asset; balance goes "to recover" → "active"; `verify-recovery` re-checks it from the chain, with a not-swept negative | ~20 min |
 | `long-offline` | watchtower | Scaled 2 weeks offline (1 day = 73 s): refresh policy, watchtower exit with arkd paused, watchtower-down control | ~40 min |
 | `exit-watchtower` | watchtower (in-process) | Watched VTXO exits before expiry; unwatched control is swept; the watchtower cannot redirect | ~30 min |
+| `multihop-exit` | app flows, unilateral exit | The app's actions headless: asset Alice → Bob → Alice off-chain, Alice exits her change collaboratively, then unilaterally exits the 100 she got back and spends it on-chain. The unrolled branch also holds her forfeited change output, which matures first; the exit spend must still spend the colored output, and the Ark balance must drop the spent `unrolled` amount; Bob `100` on-chain | ~15 min |
 
 ```bash
 scripts/run-scenario.sh refresh                 # one scenario, log in logs/scenario-refresh.log

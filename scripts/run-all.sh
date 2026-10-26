@@ -23,6 +23,7 @@ run forfeit-negatives
 run multi-user
 run failed-batch
 run fraud                 # needs tools/arkdb (scripts/setup.sh builds it)
+run multihop-exit          # app flows: multi-hop asset, unilateral exit, on-chain spend
 if [ "$QUICK" = 0 ]; then
   run sweep-recovery 720
   run long-offline

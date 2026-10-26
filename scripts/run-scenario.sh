@@ -2,7 +2,8 @@
 # Run one scenario against the running regtest stack and print its RESULT line.
 # Usage: scripts/run-scenario.sh <name> [args] [--offline-proof]
 #   simple scenarios: basic, basic-onchain-genesis, offchain-transfer, refresh, collab-exit,
-#                     forfeit-negatives, multi-user, failed-batch, fraud, verify-recovery <dir>
+#                     forfeit-negatives, multi-user, failed-batch, fraud, multihop-exit,
+#                     verify-recovery <dir>
 #   orchestrated:     exit-watchtower              (short expiry, ~30 min)
 #                     long-offline                 (watchtowerd, scaled 2 weeks offline, ~40 min)
 #                     sweep-recovery [offline_s]   (offline past the sweep, default 720 s, ~20 min)
