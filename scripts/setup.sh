@@ -7,7 +7,7 @@ ROOT=${RGB_ARKADE_DIR:-$(cd "$(dirname "$0")/.." && pwd)}; cd "$ROOT"
 mkdir -p vendor state logs tools watchtowerd
 
 clone() { # dir url commit patch
-  [ -d "$1/.git" ] || git clone -q "$2" "$1"
+  [ -e "$1/.git" ] || git clone -q "$2" "$1"
   git -C "$1" checkout -q "$3"
   if [ -n "${4:-}" ]; then
     if git -C "$1" apply --check "$ROOT/$4" 2>/dev/null; then git -C "$1" apply "$ROOT/$4"; else echo "patch $4 already applied or does not apply cleanly; check $1"; fi
@@ -20,7 +20,7 @@ clone arkade-regtest   https://github.com/ArkLabsHQ/arkade-regtest 457b9ef6119be
 [ -f arkade-regtest/.env ] || cp patches/arkade-regtest.env arkade-regtest/.env
 
 # arkd:rgb image = upstream v0.9.15 image with the patched binary
-( cd vendor/arkd && CGO_ENABLED=0 go build -o "$ROOT/arkd-image/arkd" ./cmd/arkd )
+( cd vendor/arkd && CGO_ENABLED=0 go build -ldflags="-X 'main.Version=v0.9.15-rgb'" -o "$ROOT/arkd-image/arkd" ./cmd/arkd )
 docker build -t arkd:rgb arkd-image
 
 # fraud-scenario test tool (simulates a colluding operator editing its own DB); built inside the arkd module for its go.sum
