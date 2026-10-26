@@ -317,7 +317,7 @@ pub async fn run() -> anyhow::Result<()> {
             Ok(())
         };
         match carol
-            .create_send_on_chain_transaction_with_hook(dave_addr.clone(), Amount::from_sat(DAVE_SAT), vec![bare_opret(Amount::ZERO)], Amount::from_sat(CAROL_EXIT_SPEND_FEE_SAT), hook)
+            .create_send_on_chain_transaction_with_hook(dave_addr.clone(), Amount::from_sat(DAVE_SAT), vec![bare_opret(Amount::ZERO)], Amount::from_sat(CAROL_EXIT_SPEND_FEE_SAT), &[carol_vtxo], hook)
             .await
         {
             Ok((tx, _)) => {

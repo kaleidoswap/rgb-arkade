@@ -304,7 +304,7 @@ pub(crate) async fn spend_exited(
             Ok(())
         };
         match client
-            .create_send_on_chain_transaction_with_hook(to.clone(), Amount::from_sat(RECEIVER_SAT), vec![bare_opret(Amount::ZERO)], Amount::from_sat(EXIT_SPEND_FEE_SAT), hook)
+            .create_send_on_chain_transaction_with_hook(to.clone(), Amount::from_sat(RECEIVER_SAT), vec![bare_opret(Amount::ZERO)], Amount::from_sat(EXIT_SPEND_FEE_SAT), &[exited], hook)
             .await
         {
             Ok((tx, _)) => {

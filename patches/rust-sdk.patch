@@ -1,5 +1,5 @@
 diff --git a/ark-client/src/batch.rs b/ark-client/src/batch.rs
-index 477dd4f..9e40cd3 100644
+index 477dd4f..e1dae7f 100644
 --- a/ark-client/src/batch.rs
 +++ b/ark-client/src/batch.rs
 @@ -10,7 +10,18 @@ use crate::GetVtxosRequestFilter;
@@ -194,6 +194,120 @@ index 477dd4f..9e40cd3 100644
                                  )
                                  .map_err(Error::from)?
                              }
+diff --git a/ark-client/src/coin_select.rs b/ark-client/src/coin_select.rs
+index 67dedc0..60133a4 100644
+--- a/ark-client/src/coin_select.rs
++++ b/ark-client/src/coin_select.rs
+@@ -155,3 +155,109 @@ where
+         selected_vtxo_outputs.into_iter().collect(),
+     ))
+ }
++
++/// [rgb-arkade] Select exactly `outpoints` (boarding outputs or unilaterally exited
++/// VTXOs of this wallet) as on-chain inputs, failing unless every one of them is confirmed, unspent
++/// and already claimable through the exit path.
++///
++/// [`coin_select_for_onchain`] stops as soon as the target amount is covered, so when several
++/// exited outputs pay the same contract it may pick any of them: e.g. unrolling a VTXO that came
++/// through a chain of Arkade txs also puts the owner's earlier (change) outputs of those txs
++/// on-chain, and they mature first. A caller that must spend a particular output (an RGB seal)
++/// has to name it.
++pub async fn coin_select_exact_for_onchain<B, W, S>(
++    client: &Client<B, W, S>,
++    outpoints: &[bitcoin::OutPoint],
++) -> Result<
++    (
++        Vec<unilateral_exit::OnChainInput>,
++        Vec<unilateral_exit::VtxoInput>,
++    ),
++    Error,
++>
++where
++    B: Blockchain,
++    W: OnchainWallet,
++    S: SwapStorage + 'static,
++{
++    let now: Duration = Timestamp::now()
++        .as_duration()
++        .try_into()
++        .map_err(Error::ad_hoc)?;
++    let mut onchain = Vec::new();
++    let mut vtxos = Vec::new();
++    let mut found = HashSet::new();
++    let mut pending = Vec::new();
++
++    for boarding_output in client.boarding_outputs()?.iter() {
++        for o in client
++            .blockchain()
++            .find_outpoints(boarding_output.address())
++            .await?
++        {
++            if !outpoints.contains(&o.outpoint) || o.is_spent || !found.insert(o.outpoint) {
++                continue;
++            }
++            match o.confirmation_blocktime {
++                Some(t)
++                    if boarding_output.can_be_claimed_unilaterally_by_owner(
++                        now,
++                        Duration::from_secs(t),
++                        o.confirmations,
++                    ) =>
++                {
++                    onchain.push(unilateral_exit::OnChainInput::new_with_spend_selection(
++                        boarding_output.exit_delay(),
++                        boarding_output.script_pubkey(),
++                        boarding_output.spend_selection(SpendPathKind::Exit)?,
++                        o.amount,
++                        o.outpoint,
++                    ));
++                }
++                _ => pending.push(o.outpoint),
++            }
++        }
++    }
++
++    for contract in client.active_offchain_contracts()? {
++        let vtxo = &contract.vtxo;
++        for o in client.blockchain().find_outpoints(vtxo.address()).await? {
++            if !outpoints.contains(&o.outpoint) || o.is_spent || !found.insert(o.outpoint) {
++                continue;
++            }
++            match o.confirmation_blocktime {
++                Some(t)
++                    if vtxo.can_be_claimed_unilaterally_by_owner(
++                        now,
++                        Duration::from_secs(t),
++                        o.confirmations,
++                    ) =>
++                {
++                    vtxos.push(unilateral_exit::VtxoInput::new_with_spend_selection(
++                        o.outpoint,
++                        vtxo.exit_delay(),
++                        TxOut {
++                            value: o.amount,
++                            script_pubkey: vtxo.script_pubkey(),
++                        },
++                        contract.spend_selection(SpendPathKind::Exit)?,
++                    ));
++                }
++                _ => pending.push(o.outpoint),
++            }
++        }
++    }
++
++    if !pending.is_empty() {
++        return Err(Error::coin_select(format!(
++            "outputs not claimable yet (exit delay): {pending:?}"
++        )));
++    }
++    let missing: Vec<_> = outpoints.iter().filter(|o| !found.contains(o)).collect();
++    if !missing.is_empty() {
++        return Err(Error::coin_select(format!(
++            "outputs not found among this wallet's unspent on-chain boarding/exited outputs: {missing:?}"
++        )));
++    }
++    Ok((onchain, vtxos))
++}
 diff --git a/ark-client/src/lib.rs b/ark-client/src/lib.rs
 index bb30951..8955dd2 100644
 --- a/ark-client/src/lib.rs
@@ -238,30 +352,37 @@ index 65009bb..5193101 100644
          pending_tx: PendingTx,
      ) -> Result<(), Error> {
 diff --git a/ark-client/src/unilateral_exit.rs b/ark-client/src/unilateral_exit.rs
-index 4887cf1..c7816c6 100644
+index 4887cf1..17cc8b1 100644
 --- a/ark-client/src/unilateral_exit.rs
 +++ b/ark-client/src/unilateral_exit.rs
-@@ -250,6 +250,59 @@ where
+@@ -250,6 +250,66 @@ where
              .await
      }
  
-+    /// [ark-rgb-demo local patch] Build and sign (but do not broadcast) a transaction spending
++    /// [rgb-arkade] Build and sign (but do not broadcast) a transaction spending
 +    /// unilaterally-exited VTXOs / boarding outputs on-chain, with `pre_outputs` placed first, an
 +    /// explicit `fee`, and a `pre_sign_hook` run on the unsigned PSBT (used to RGB-color it).
++    ///
++    /// `inputs`: the exact outputs to spend (e.g. the RGB-colored exited VTXO); fails until all of
++    /// them are claimable. Empty: plain coin selection over every claimable output.
 +    pub async fn create_send_on_chain_transaction_with_hook<H>(
 +        &self,
 +        to_address: Address,
 +        to_amount: Amount,
 +        pre_outputs: Vec<TxOut>,
 +        fee: Amount,
++        inputs: &[bitcoin::OutPoint],
 +        pre_sign_hook: H,
 +    ) -> Result<(Transaction, Vec<TxOut>), Error>
 +    where
 +        H: FnOnce(&mut bitcoin::Psbt) -> Result<(), ark_core::Error>,
 +    {
 +        let pre_amount: Amount = pre_outputs.iter().map(|o| o.value).sum();
-+        let (onchain_inputs, vtxo_inputs) =
-+            coin_select_for_onchain(self, to_amount + fee + pre_amount).await?;
++        let (onchain_inputs, vtxo_inputs) = if inputs.is_empty() {
++            coin_select_for_onchain(self, to_amount + fee + pre_amount).await?
++        } else {
++            crate::coin_select::coin_select_exact_for_onchain(self, inputs).await?
++        };
 +        let change_address = self.inner.wallet.get_onchain_address()?;
 +        let sign = move |input: &mut psbt::Input, msg: bitcoin::secp256k1::Message| match &input
 +            .witness_script
@@ -302,7 +423,7 @@ index 4887cf1..c7816c6 100644
          &self,
          to_address: Address,
 diff --git a/ark-core/src/batch.rs b/ark-core/src/batch.rs
-index 65a90c0..35c8e93 100644
+index 65a90c0..4306d0c 100644
 --- a/ark-core/src/batch.rs
 +++ b/ark-core/src/batch.rs
 @@ -360,12 +360,41 @@ pub fn sign_batch_tree_tx(
@@ -357,7 +478,7 @@ index 65a90c0..35c8e93 100644
              Some(connector_output.clone());
  
 diff --git a/ark-core/src/intent.rs b/ark-core/src/intent.rs
-index 6657dc1..5ec4cb0 100644
+index 6657dc1..038e1f9 100644
 --- a/ark-core/src/intent.rs
 +++ b/ark-core/src/intent.rs
 @@ -488,8 +488,25 @@ pub enum IntentMessage {
@@ -387,7 +508,7 @@ index 6657dc1..5ec4cb0 100644
              .map_err(Error::ad_hoc)
              .context("failed to serialize intent message to JSON")
 diff --git a/ark-core/src/send.rs b/ark-core/src/send.rs
-index 479464c..8d94835 100644
+index 479464c..d7506a7 100644
 --- a/ark-core/src/send.rs
 +++ b/ark-core/src/send.rs
 @@ -69,6 +69,10 @@ pub struct VtxoInput {
@@ -566,7 +687,7 @@ index bfcca79..e9a5814 100644
      for (i, input) in psbt.inputs.iter_mut().enumerate() {
          let (exit_control_block, (exit_script, leaf_version)) = input
 diff --git a/ark-grpc/src/client.rs b/ark-grpc/src/client.rs
-index 9b6cf4b..61f9a51 100644
+index 9b6cf4b..b39bc5e 100644
 --- a/ark-grpc/src/client.rs
 +++ b/ark-grpc/src/client.rs
 @@ -660,6 +660,46 @@ impl Client {

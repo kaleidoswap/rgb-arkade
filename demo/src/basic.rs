@@ -7,7 +7,7 @@
 //! (a plain rgb-lib wallet).
 #![allow(unused_imports)]
 use crate::common::*;
-use anyhow::{Context, anyhow, bail};
+use anyhow::{Context, anyhow, bail, ensure};
 use ark_bdk_wallet::Wallet as ArkBdkWallet;
 use ark_client::{Client, InMemorySwapStorage, OfflineClient, OfflineClientConfig, GetVtxosRequestFilter};
 use ark_client::wallet::OnchainWallet;
@@ -60,7 +60,7 @@ pub async fn run(onchain_genesis: bool) -> anyhow::Result<()> {
     let _ = &mut alice_rgb;
 
     // ---------------------------------------------------------------- step 3
-    step(if onchain_genesis { "M3 (variant B): predict checkpoint txid; issue NIA on-chain; jump-in transfer to cp:0" } else { "M3: predict checkpoint txid and issue NIA to cp:0" });
+    step(if onchain_genesis { "3. (on-chain genesis) predict checkpoint txid; issue NIA on-chain; jump-in transfer to cp:0" } else { "3. predict checkpoint txid and issue NIA to cp:0" });
     let inputs = alice.resolve_selected_send_inputs(&[alice_vtxo.outpoint]).await?;
     let (bob_addr, _) = bob.get_offchain_address().await?;
     let (alice_change, alice_change_vtxo) = alice.get_offchain_address().await?;
@@ -204,6 +204,7 @@ pub async fn run(onchain_genesis: bool) -> anyhow::Result<()> {
                 Amount::from_sat(CAROL_SAT),
                 vec![bare_opret(Amount::ZERO)],
                 Amount::from_sat(BOB_EXIT_SPEND_FEE_SAT),
+                &[OutPoint { txid: ark_txid, vout: 1 }],
                 hook,
             )
             .await
@@ -224,9 +225,7 @@ pub async fn run(onchain_genesis: bool) -> anyhow::Result<()> {
         }
     }
     let bob_spend = bob_spend.ok_or_else(|| anyhow!("Bob could not spend the exited VTXO"))?;
-    if !bob_spend.input.iter().any(|i| i.previous_output == OutPoint { txid: ark_txid, vout: 1 }) {
-        println!("WARNING: spend does not include ark_txid:2 (Bob RGB output)?");
-    }
+    ensure!(bob_spend.input.iter().any(|i| i.previous_output == OutPoint { txid: ark_txid, vout: 1 }), "spend does not include ark_txid:1 (Bob's RGB output)");
     let mut bob_spend_txid = None;
     for i in 0..60 {
         match regtest.send_raw(&bob_spend) {
