@@ -1,6 +1,6 @@
 diff --git a/src/ark_proof.rs b/src/ark_proof.rs
 new file mode 100644
-index 0000000..7ffc030
+index 0000000..25103d8
 --- /dev/null
 +++ b/src/ark_proof.rs
 @@ -0,0 +1,579 @@
@@ -606,7 +606,7 @@ index 3fd19f1..f31cd0c 100644
      },
      wallet::{AssignmentsCollection, Indexer, multisig::RespondToOperation},
 diff --git a/src/utils.rs b/src/utils.rs
-index ec2d234..ccc4441 100644
+index ec2d234..04449fa 100644
 --- a/src/utils.rs
 +++ b/src/utils.rs
 @@ -1006,6 +1006,46 @@ impl<const TRANSFER: bool> ResolveWitness for OffchainResolver<'_, '_, TRANSFER>
@@ -657,10 +657,10 @@ index ec2d234..ccc4441 100644
  mod tests {
      use super::*;
 diff --git a/src/wallet/indexer.rs b/src/wallet/indexer.rs
-index 2ef1fbf..222523e 100644
+index 2ef1fbf..1d75fd1 100644
 --- a/src/wallet/indexer.rs
 +++ b/src/wallet/indexer.rs
-@@ -134,6 +134,32 @@ impl Indexer {
+@@ -134,6 +134,53 @@ impl Indexer {
          })
      }
  
@@ -690,11 +690,32 @@ index 2ef1fbf..222523e 100644
 +        }
 +    }
 +
++    /// [rgb-arkade] Spender of a mined outpoint, looking up its script first: (txid, confirmed).
++    pub(crate) fn spender_of_outpoint(
++        &self,
++        outpoint: OutPoint,
++    ) -> Result<Option<(bdk_wallet::bitcoin::Txid, bool)>, String> {
++        match self {
++            #[cfg(feature = "electrum")]
++            Indexer::Electrum(client) => {
++                let tx = client.inner.transaction_get(&outpoint.txid).map_err(|e| e.to_string())?;
++                let spk = tx
++                    .output
++                    .get(outpoint.vout as usize)
++                    .map(|o| o.script_pubkey.clone())
++                    .ok_or_else(|| format!("{outpoint}: no such output"))?;
++                self.spender_of(outpoint, &spk)
++            }
++            #[cfg(feature = "esplora")]
++            Indexer::Esplora(_) => Err(s!("spender lookup not implemented for esplora")),
++        }
++    }
++
      pub(crate) fn get_tx_confirmations(&self, txid: &str) -> Result<Option<u64>, Error> {
          Ok(match self {
              #[cfg(feature = "electrum")]
 diff --git a/src/wallet/online.rs b/src/wallet/online.rs
-index fb204cf..133e10b 100644
+index fb204cf..5a9ebc9 100644
 --- a/src/wallet/online.rs
 +++ b/src/wallet/online.rs
 @@ -22,6 +22,49 @@ pub trait WalletOnline: WalletOffline {
@@ -787,7 +808,7 @@ index fb204cf..133e10b 100644
              if asset_schema == AssetSchema::Ifa {
                  let contract_id = valid_consignment.contract_id();
 diff --git a/src/wallet/rust_only.rs b/src/wallet/rust_only.rs
-index 11d45e5..fb6727e 100644
+index 11d45e5..56890a0 100644
 --- a/src/wallet/rust_only.rs
 +++ b/src/wallet/rust_only.rs
 @@ -4,6 +4,15 @@
@@ -806,7 +827,7 @@ index 11d45e5..fb6727e 100644
  /// RGB asset-specific information to color a transaction
  #[derive(Debug, Clone)]
  pub struct AssetColoringInfo {
-@@ -407,6 +416,717 @@ impl Wallet {
+@@ -407,6 +416,724 @@ impl Wallet {
          ))
      }
  
@@ -1306,6 +1327,12 @@ index 11d45e5..fb6727e 100644
 +        let txid = rec.outpoint.split(':').next().unwrap_or_default();
 +        if let Some(c) = self.indexer().get_tx_confirmations(txid)? {
 +            if c > 0 {
++                // unrolled; once its output is spent on-chain (e.g. an exit spend made with the
++                // stock coloring API, which does not touch this registry) the state has moved on
++                let op = BdkOutPoint::from_str(&rec.outpoint).map_err(|_| Error::InvalidTxid)?;
++                if let Some((by, _)) = self.indexer().spender_of_outpoint(op).map_err(|details| Error::Indexer { details })? {
++                    return Ok(ArkVtxoStatus::Spent { by: by.to_string() });
++                }
 +                return Ok(ArkVtxoStatus::Unrolled);
 +            }
 +        }
@@ -1354,8 +1381,9 @@ index 11d45e5..fb6727e 100644
 +            }
 +            let st = self.ark_status_of(rec)?;
 +            if let ArkVtxoStatus::Spent { by } = &st {
-+                // the state left once the spending witness is attested (verified Ark proof)
-+                if !pending.contains(by) {
++                // the state left once the spending witness is attested (verified Ark proof) or
++                // mined (reconciled against the chain)
++                if !pending.contains(by) || self.indexer().get_tx_confirmations(by)?.is_some_and(|c| c > 0) {
 +                    continue;
 +                }
 +            }
@@ -1524,7 +1552,7 @@ index 11d45e5..fb6727e 100644
      /// Consume an RGB fascia.
      ///
      /// <div class="warning">This method is meant for special usage and is normally not needed, use
-@@ -449,8 +1169,9 @@ impl Wallet {
+@@ -449,8 +1176,9 @@ impl Wallet {
      ) -> Result<UpdateRes, Error> {
          info!(self.logger(), "Updating witnesses...");
          self.check_online(online)?;
