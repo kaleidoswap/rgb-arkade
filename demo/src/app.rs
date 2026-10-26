@@ -119,12 +119,13 @@ fn miner(shared: Arc<StdMutex<Shared>>) {
 enum Action {
     Board { who: String, sats: Option<u64> },
     Issue { who: String },
-    Send { from: String, to: String, asset_id: String, amount: u64, sats: Option<u64> },
-    Refresh { who: String, asset_id: String },
-    CollabExit { who: String, asset_id: String },
-    UnilateralExit { who: String, asset_id: String },
-    OnchainSend { from: String, to: String, asset_id: String },
-    Recover { who: String, asset_id: String },
+    // `outpoint` (optional) picks which colored output to use when a wallet holds several
+    Send { from: String, to: String, asset_id: String, amount: u64, sats: Option<u64>, outpoint: Option<String> },
+    Refresh { who: String, asset_id: String, outpoint: Option<String> },
+    CollabExit { who: String, asset_id: String, outpoint: Option<String> },
+    UnilateralExit { who: String, asset_id: String, outpoint: Option<String> },
+    OnchainSend { from: String, to: String, asset_id: String, outpoint: Option<String> },
+    Recover { who: String, asset_id: String, outpoint: Option<String> },
     Mine { blocks: Option<u32> },
     SetExpiry { seconds: u64 },
     Sync,
@@ -191,11 +192,11 @@ fn two_mut(ws: &mut [Wallet], a: usize, b: usize) -> anyhow::Result<(&mut Wallet
     }
 }
 
-fn take_holding(w: &mut Wallet, asset_id: &str, kinds: &[&str]) -> anyhow::Result<Holding> {
+fn take_holding(w: &mut Wallet, asset_id: &str, kinds: &[&str], outpoint: &Option<String>) -> anyhow::Result<Holding> {
     let i = w
         .holdings
         .iter()
-        .position(|h| h.asset_id == asset_id && kinds.contains(&h.kind.as_str()))
+        .position(|h| h.asset_id == asset_id && kinds.contains(&h.kind.as_str()) && outpoint.as_ref().is_none_or(|o| *o == h.outpoint))
         .ok_or_else(|| anyhow!("{} holds no {asset_id} as {kinds:?}", w.name))?;
     Ok(w.holdings.remove(i))
 }
@@ -270,10 +271,10 @@ async fn run_action(c: &mut Core, a: &Action, lg: &Logger) -> anyhow::Result<()>
             w.holdings.push(Holding { asset_id: asset_id.clone(), amount: crate::ISSUE_AMOUNT, kind: "vtxo".into(), outpoint: v.to_string(), proof: None });
             lg.push("ok", format!("{who} holds {} of {asset_id} on VTXO {v}", crate::ISSUE_AMOUNT));
         }
-        Action::Send { from, to, asset_id, amount, sats } => {
+        Action::Send { from, to, asset_id, amount, sats, outpoint } => {
             let (fi, ti) = (idx(&from)?, idx(&to)?);
             let (f, t) = two_mut(&mut c.wallets, fi, ti)?;
-            let h = take_holding(f, &asset_id, &["vtxo"])?;
+            let h = take_holding(f, &asset_id, &["vtxo"], &outpoint)?;
             let res: anyhow::Result<()> = async {
                 ensure!(amount > 0 && amount <= h.amount, "amount must be 1..={}", h.amount);
                 let cid = ContractId::from_str(&asset_id).map_err(|e| anyhow!("{e}"))?;
@@ -345,10 +346,24 @@ async fn run_action(c: &mut Core, a: &Action, lg: &Logger) -> anyhow::Result<()>
                 return Err(e);
             }
         }
-        Action::Refresh { who, asset_id } | Action::Recover { who, asset_id } => {
+        Action::Refresh { who, asset_id, outpoint } | Action::Recover { who, asset_id, outpoint } => {
             let recover = matches!(a, Action::Recover { .. });
             let w = &mut c.wallets[idx(&who)?];
-            let h = take_holding(w, &asset_id, &["vtxo"])?;
+            let mut outpoint = outpoint;
+            if outpoint.is_none() {
+                // refresh prefers a live VTXO, recover a swept one
+                for h in w.holdings.iter().filter(|h| h.asset_id == asset_id && h.kind == "vtxo") {
+                    let swept = match OutPoint::from_str(&h.outpoint) {
+                        Ok(o) => vtxo_info(o).await.is_some_and(|i| i.is_swept),
+                        Err(_) => false,
+                    };
+                    if swept == recover {
+                        outpoint = Some(h.outpoint.clone());
+                        break;
+                    }
+                }
+            }
+            let h = take_holding(w, &asset_id, &["vtxo"], &outpoint)?;
             let v = OutPoint::from_str(&h.outpoint)?;
             let cid = ContractId::from_str(&asset_id).map_err(|e| anyhow!("{e}"))?;
             if recover {
@@ -385,9 +400,9 @@ async fn run_action(c: &mut Core, a: &Action, lg: &Logger) -> anyhow::Result<()>
             w.holdings.push(Holding { asset_id, amount: h.amount, kind: "vtxo".into(), outpoint: fc.target.to_string(), proof: Some(p.display().to_string()) });
             lg.push("ok", format!("{who}: {} now on new VTXO {}", h.amount, fc.target));
         }
-        Action::CollabExit { who, asset_id } => {
+        Action::CollabExit { who, asset_id, outpoint } => {
             let w = &mut c.wallets[idx(&who)?];
-            let h = take_holding(w, &asset_id, &["vtxo"])?;
+            let h = take_holding(w, &asset_id, &["vtxo"], &outpoint)?;
             let v = OutPoint::from_str(&h.outpoint)?;
             let cid = ContractId::from_str(&asset_id).map_err(|e| anyhow!("{e}"))?;
             let exit_addr = Address::from_str(&bl(|| w.rgb.get_address())?)?.assume_checked();
@@ -415,9 +430,13 @@ async fn run_action(c: &mut Core, a: &Action, lg: &Logger) -> anyhow::Result<()>
             w.holdings.push(Holding { asset_id, amount: h.amount, kind: "exit-output".into(), outpoint: fc.target.to_string(), proof: Some(p.display().to_string()) });
             lg.push("ok", format!("{who}: {} now on on-chain output {}", h.amount, fc.target));
         }
-        Action::UnilateralExit { who, asset_id } => {
+        Action::UnilateralExit { who, asset_id, outpoint } => {
             let w = &mut c.wallets[idx(&who)?];
-            let i = w.holdings.iter().position(|x| x.asset_id == asset_id && x.kind == "vtxo").ok_or_else(|| anyhow!("no VTXO holding"))?;
+            let i = w
+                .holdings
+                .iter()
+                .position(|x| x.asset_id == asset_id && x.kind == "vtxo" && outpoint.as_ref().is_none_or(|o| *o == x.outpoint))
+                .ok_or_else(|| anyhow!("{who} holds no {asset_id} on a VTXO"))?;
             let v = OutPoint::from_str(&w.holdings[i].outpoint)?;
             lg.info(format!("fund {who}'s on-chain wallet for exit fees, then broadcast the branch of {v} (no operator needed)"));
             fund_onchain(&who, &w.ark, &w.ark_w).await?;
@@ -429,10 +448,10 @@ async fn run_action(c: &mut Core, a: &Action, lg: &Logger) -> anyhow::Result<()>
             w.holdings[i].kind = "unrolled".into();
             lg.push("ok", format!("{who}: {v} is on-chain; spendable after the exit delay (on-chain send mines blocks until then)"));
         }
-        Action::OnchainSend { from, to, asset_id } => {
+        Action::OnchainSend { from, to, asset_id, outpoint } => {
             let (fi, ti) = (idx(&from)?, idx(&to)?);
             let (f, t) = two_mut(&mut c.wallets, fi, ti)?;
-            let h = take_holding(f, &asset_id, &["unrolled", "exit-output"])?;
+            let h = take_holding(f, &asset_id, &["unrolled", "exit-output"], &outpoint)?;
             let o = OutPoint::from_str(&h.outpoint)?;
             let cid = ContractId::from_str(&asset_id).map_err(|e| anyhow!("{e}"))?;
             let recv = bl(|| t.rgb.witness_receive(None, Assignment::Fungible(h.amount), now() + 86_400, vec![], 1))?;

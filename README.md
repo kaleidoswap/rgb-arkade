@@ -88,7 +88,9 @@ make app              # or: scripts/app.sh [port]
 | Recover swept | Recover a VTXO the operator swept after expiry, asset included. To try it: set the batch expiry to 600 s, issue or refresh, wait until the VTXO shows `swept` (about 10 to 15 min, mine a block now and then), then recover. Set the expiry back to `604672` afterwards. |
 | Mine / Set batch expiry | Regtest time controls: mine blocks, change arkd's `vtxoTreeExpiry` through the admin API (applies to new batches). |
 
-Each wallet shows its off-chain BTC balance, its VTXOs with expiry, the Ark-aware asset balance (active, to recover, unrolled, in flight) next to rgb-lib's stock balance, and the colored outputs the app is tracking. The API is `GET /api/state` and `POST /api/action` with a JSON body such as `{"action":"send","from":"alice","to":"bob","asset_id":"rgb:...","amount":300}`.
+The page has a step indicator for the main flow (Board → Issue + jump-in → Send off-chain → Refresh → Exit → Sweep recovery) with a plain-language explanation of each step on hover, and a **Demo mode** button that runs board, issue, both off-chain sends, refresh, collaborative exit and on-chain send end to end (about one minute). Buttons that cannot run say why; the activity log shows one headline per action with its txids (click to copy) and keeps the technical lines, including the tampered-proof checks, folded.
+
+Each wallet shows its off-chain BTC balance, its VTXOs with expiry, the Ark-aware asset balance (active, to recover, unrolled, in flight) next to rgb-lib's stock balance, and the colored outputs the app is tracking. The API is `GET /api/state` and `POST /api/action` with a JSON body such as `{"action":"send","from":"alice","to":"bob","asset_id":"rgb:...","amount":300}`; actions on a colored output accept an optional `"outpoint"` to pick one when a wallet holds several.
 
 Limits: one action runs at a time; wallets live in memory for the session (files under `state/app-<ts>/`), so restarting the app starts with new, empty wallets; regtest only. An off-chain send splits the VTXO's sats in half when there is asset change, so long chains of partial sends eventually need a refresh.
 
