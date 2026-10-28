@@ -285,6 +285,65 @@ pub(crate) fn negatives(
     Ok(all)
 }
 
+/// Negative test: a never-mined tx spending an on-chain P2TR output by key path, with a well-formed
+/// opret and no operator signature. Its owner could sign any number of them, so it must be rejected.
+pub(crate) fn negative_key_path_witness(
+    who: &str,
+    rgb: &RgbWallet,
+    online: &Online,
+    regtest: &Regtest,
+    proof: &Path,
+    operators: &str,
+    rec: &mut dyn FnMut(&str, String),
+) -> anyhow::Result<bool> {
+    use bitcoin::hashes::Hash;
+    use bitcoin::key::{Keypair, TapTweak};
+    use bitcoin::secp256k1::{Message, Secp256k1, rand::thread_rng};
+    use bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
+    use bitcoin::{Address, Amount, Network, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness};
+
+    let secp = Secp256k1::new();
+    let kp = Keypair::new(&secp, &mut thread_rng());
+    let addr = Address::p2tr(&secp, kp.x_only_public_key().0, None, Network::Regtest);
+    regtest::faucet(&addr, "0.0001")?;
+    let mut utxo = None;
+    for _ in 0..30 {
+        utxo = regtest.find_outpoints_blocking(&addr).into_iter().find(|u| u.confirmations > 0);
+        if utxo.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    let utxo = utxo.ok_or_else(|| anyhow!("faucet output to {addr} not confirmed"))?;
+    let tx = Transaction {
+        version: bitcoin::transaction::Version::non_standard(3),
+        lock_time: bitcoin::absolute::LockTime::ZERO,
+        input: vec![TxIn { previous_output: utxo.outpoint, script_sig: ScriptBuf::new(), sequence: Sequence::MAX, witness: Witness::new() }],
+        output: vec![TxOut { value: Amount::ZERO, script_pubkey: ScriptBuf::new_op_return([0xaa; 32]) }],
+    };
+    let prevout = TxOut { value: utxo.amount, script_pubkey: addr.script_pubkey() };
+    let h = SighashCache::new(&tx).taproot_key_spend_signature_hash(0, &Prevouts::All(&[prevout]), TapSighashType::Default)?;
+    let signature = secp.sign_schnorr_no_aux_rand(&Message::from_digest(h.to_byte_array()), &kp.tap_tweak(&secp, None).to_keypair());
+    let mut psbt = Psbt::from_unsigned_tx(tx.clone())?;
+    psbt.inputs[0].tap_key_sig = Some(bitcoin::taproot::Signature { signature, sighash_type: TapSighashType::Default });
+    let f = ProofFile { version: 1, witnesses: vec![tx.compute_txid().to_string()], psbts: vec![psbt.to_string()], recoveries: vec![], vtxos: vec![] };
+    let path = proof.with_extension("neg-key_path_witness.json");
+    std::fs::write(&path, serde_json::to_string(&f)?)?;
+    // the indexer behind the resolver can lag behind the faucet block
+    let mut r = import(rgb, online, &path, operators);
+    for _ in 0..10 {
+        if !matches!(&r, Err(e) if e.to_string().contains("neither in the proof nor mined")) {
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(2));
+        r = import(rgb, online, &path, operators);
+    }
+    println!("[{who}] NEG proof key_path_witness: {}", match &r { Ok(v) => format!("ACCEPTED {v:?}"), Err(e) => format!("rejected: {e}") });
+    let ok = matches!(&r, Err(e) if e.to_string().contains("no input co-signed by the operator"));
+    rec(&format!("neg_proof_{who}_key_path_witness"), match r { Ok(_) => "ACCEPTED".into(), Err(e) => format!("rejected: {e}").chars().take(300).collect() });
+    Ok(ok)
+}
+
 pub(crate) fn operators(info: &ark_core::server::Info) -> String {
     format!("{},{}", info.signer_pk, info.forfeit_pk)
 }

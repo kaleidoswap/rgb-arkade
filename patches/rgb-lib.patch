@@ -1,9 +1,9 @@
 diff --git a/src/ark_proof.rs b/src/ark_proof.rs
 new file mode 100644
-index 0000000..25103d8
+index 0000000..58577c6
 --- /dev/null
 +++ b/src/ark_proof.rs
-@@ -0,0 +1,579 @@
+@@ -0,0 +1,688 @@
 +//! [rgb-arkade] Self-contained Ark proofs for unmined RGB witnesses.
 +//!
 +//! A proof (`*.arkproof.json`, sidecar of a consignment) lists the RGB witness txids that are
@@ -24,6 +24,7 @@ index 0000000..25103d8
 +//!   binds the forfeit to that connector of the mined commitment tx;
 +//! - in strict mode the satisfied tapleaf must contain a pinned operator key (signer/forfeit key), so a
 +//!   user-only leaf (e.g. the CSV exit leaf) cannot fake an operator-acknowledged spend;
++//! - every listed witness has at least one such operator leaf: key-path signatures alone do not count;
 +//! - every listed witness has exactly one OP_RETURN: index 0, 0 sat, `OP_RETURN PUSH32`.
 +//!
 +//! The anchor of a witness is its highest mined ancestor (the most recent batch commitment).
@@ -365,6 +366,7 @@ index 0000000..25103d8
 +        // signatures
 +        let secp = ProofSecp::verification_only();
 +        let mut cache = SighashCache::new(tx);
++        let mut operator_leaf = false;
 +        for (idx, input) in psbt.inputs.iter().enumerate() {
 +            let spk = &prevouts[idx].script_pubkey;
 +            if let Some(sig) = input.tap_key_sig {
@@ -400,6 +402,7 @@ index 0000000..25103d8
 +                            .map_err(|e| format!("{txid} input {idx} script-path ({pk}): {e}"))?;
 +                    }
 +                    ok_leaf = true;
++                    operator_leaf = true;
 +                    break;
 +                }
 +                if !ok_leaf {
@@ -408,6 +411,10 @@ index 0000000..25103d8
 +                    ));
 +                }
 +            }
++        }
++        // [rgb-arkade] key-path only (e.g. any on-chain P2TR UTXO): the owner alone can sign it twice
++        if is_witness && mode == Mode::Strict && !operator_leaf {
++            return Err(format!("witness {txid} has no input co-signed by the operator"));
 +        }
 +        let anchor = anchor.ok_or_else(|| format!("{txid} has no inputs"))?;
 +        self.memo.insert((txid, mode), anchor);
@@ -582,6 +589,108 @@ index 0000000..25103d8
 +        anchors: [anchors[0].clone(), anchors[1].clone()],
 +        operator_keys,
 +    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    use bdk_wallet::bitcoin::{
++        Amount as ProofAmount, Sequence, TxIn, Witness,
++        absolute::LockTime,
++        key::{Keypair, TapTweak},
++        secp256k1::SecretKey,
++        taproot::Signature as TapSig,
++        transaction::Version,
++    };
++    use rgbstd::vm::WitnessPos;
++
++    struct Mined(ProofTx);
++
++    impl ResolveWitness for Mined {
++        fn resolve_witness(&self, txid: RgbTxid) -> Result<WitnessStatus, WitnessResolverError> {
++            if txid.to_string() != self.0.compute_txid().to_string() {
++                return Ok(WitnessStatus::Unresolved);
++            }
++            let pos = WitnessPos::bitcoin(NonZeroU32::new(100).unwrap(), 1_700_000_000).unwrap();
++            Ok(WitnessStatus::Resolved(
++                self.0.clone(),
++                WitnessOrd::Mined(pos),
++            ))
++        }
++        fn check_chain_net(&self, _: ChainNet) -> Result<(), WitnessResolverError> {
++            Ok(())
++        }
++    }
++
++    fn tx(prev: ProofOutPoint, output: Vec<ProofTxOut>) -> ProofTx {
++        let input = vec![TxIn {
++            previous_output: prev,
++            script_sig: ProofScript::new(),
++            sequence: Sequence::MAX,
++            witness: Witness::new(),
++        }];
++        ProofTx {
++            version: Version::non_standard(3),
++            lock_time: LockTime::ZERO,
++            input,
++            output,
++        }
++    }
++
++    #[test]
++    fn key_path_only_witness_is_rejected() {
++        // an on-chain P2TR UTXO spent by a never-mined tx with a well-formed opret, no operator
++        let secp = ProofSecp::new();
++        let owner = Keypair::from_secret_key(&secp, &SecretKey::from_slice(&[2; 32]).unwrap());
++        let spk = ProofScript::new_p2tr(&secp, owner.x_only_public_key().0, None);
++        let prevout = ProofTxOut {
++            value: ProofAmount::from_sat(10_000),
++            script_pubkey: spk,
++        };
++        let parent = tx(
++            ProofOutPoint::new(ProofTxid::from_byte_array([1; 32]), 0),
++            vec![prevout.clone()],
++        );
++        let opret = ProofTxOut {
++            value: ProofAmount::ZERO,
++            script_pubkey: ProofScript::new_op_return([7; 32]),
++        };
++        let spend = tx(
++            ProofOutPoint::new(parent.compute_txid(), 0),
++            vec![opret, prevout.clone()],
++        );
++        let h = SighashCache::new(&spend)
++            .taproot_key_spend_signature_hash(
++                0,
++                &Prevouts::All(&[prevout]),
++                TapSighashType::Default,
++            )
++            .unwrap();
++        let signer = owner.tap_tweak(&secp, None).to_keypair();
++        let signature =
++            secp.sign_schnorr_no_aux_rand(&ProofMessage::from_digest(h.to_byte_array()), &signer);
++        let mut psbt = ProofPsbt::from_unsigned_tx(spend.clone()).unwrap();
++        psbt.inputs[0].tap_key_sig = Some(TapSig {
++            signature,
++            sighash_type: TapSighashType::Default,
++        });
++        let proof = ArkProof {
++            version: 1,
++            witnesses: vec![spend.compute_txid().to_string()],
++            psbts: vec![psbt.to_string()],
++            recoveries: vec![],
++            vtxos: vec![],
++        };
++        let operator = Keypair::from_secret_key(&secp, &SecretKey::from_slice(&[9; 32]).unwrap());
++        let err = verify_ark_proof(
++            &proof,
++            &Mined(parent),
++            &operator.x_only_public_key().0.to_string(),
++        )
++        .unwrap_err();
++        assert!(err.contains("no input co-signed by the operator"), "{err}");
++    }
 +}
 diff --git a/src/lib.rs b/src/lib.rs
 index 3fd19f1..f31cd0c 100644

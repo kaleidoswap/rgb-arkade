@@ -208,6 +208,8 @@ pub async fn run() -> anyhow::Result<()> {
         let _down = crate::proof::arkd_down(&mut |k: &str, v: String| rec(k, v, &mut summary), "bob")?;
         let neg = crate::proof::negatives("bob", &bob_rgb, &bob_online, &p_ab, &operators, &mut |k: &str, v: String| rec(k, v, &mut summary))?;
         ensure!(neg, "a mutated proof was accepted");
+        let neg = crate::proof::negative_key_path_witness("bob", &bob_rgb, &bob_online, &regtest, &p_ab, &operators, &mut |k: &str, v: String| rec(k, v, &mut summary))?;
+        ensure!(neg, "a witness without an operator co-signature was accepted");
         let reg = crate::proof::import(&bob_rgb, &bob_online, &p_ab, &operators)?;
         rec("bob_proof_registered", format!("{reg:?}"), &mut summary);
         let r = bl(|| bob_rgb.accept_transfer_consignment_offchain(
