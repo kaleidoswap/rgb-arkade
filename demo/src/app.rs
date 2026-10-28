@@ -967,7 +967,15 @@ fn worker(shared: Arc<StdMutex<Shared>>, rx: std::sync::mpsc::Receiver<Action>, 
             if matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)) {
                 return;
             }
-            init_in(&shared, dir.clone()).await
+            // the electrum indexer flakes ("Invalid indexer") under concurrent load: retry
+            let mut r = init_in(&shared, dir.clone()).await;
+            for _ in 0..10 {
+                let Err(e) = &r else { break };
+                Logger { shared: shared.clone(), action: "startup".into() }.info(format!("retrying in 5 s: {e:#}"));
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                r = init_in(&shared, dir.clone()).await;
+            }
+            r
         };
         shared.lock().unwrap().busy = None;
         let mut core = match started {

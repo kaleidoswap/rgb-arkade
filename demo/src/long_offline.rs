@@ -230,18 +230,32 @@ pub(crate) async fn pay_from_rgb_output(
     let input = input.ok_or_else(|| anyhow!("BDK never saw {o}"))?;
     let change = Address::from_str(&bl(|| rgb.get_address())?)?.assume_checked();
     let fee = 600u64;
+    let mut inputs = vec![(o, input)];
+    let mut total = value;
+    // A received asset often sits on a small output (the PAY_SAT that carried it): pay the rest
+    // from a vanilla UTXO (never one with RGB allocations, whose seals this tx would close).
+    if total < PAY_SAT + fee + 330 {
+        let (fo, fv, finput) = vanilla_funding(who, rgb, online, PAY_SAT + fee + 330 - total).await?;
+        inputs.push((fo, finput));
+        total += fv;
+    }
     let unsigned = Transaction {
         version: bitcoin::transaction::Version::TWO,
         lock_time: bitcoin::absolute::LockTime::ZERO,
-        input: vec![bitcoin::TxIn { previous_output: o, sequence: bitcoin::Sequence::ENABLE_RBF_NO_LOCKTIME, ..Default::default() }],
+        input: inputs
+            .iter()
+            .map(|(op, _)| bitcoin::TxIn { previous_output: *op, sequence: bitcoin::Sequence::ENABLE_RBF_NO_LOCKTIME, ..Default::default() })
+            .collect(),
         output: vec![
             bare_opret(Amount::ZERO),
             TxOut { value: Amount::from_sat(PAY_SAT), script_pubkey: to },
-            TxOut { value: Amount::from_sat(value - PAY_SAT - fee), script_pubkey: change.script_pubkey() },
+            TxOut { value: Amount::from_sat(total - PAY_SAT - fee), script_pubkey: change.script_pubkey() },
         ],
     };
     let mut psbt = Psbt::from_unsigned_tx(unsigned)?;
-    psbt.inputs[0] = input;
+    for (i, (_, inp)) in inputs.into_iter().enumerate() {
+        psbt.inputs[i] = inp;
+    }
     let t = bl(|| rgb.color_psbt_and_consume_custom(&mut psbt, contract_id, vec![(SealTarget::WitnessVout(1), asset_amount, blinding)]))?;
     t.save_file(cons).map_err(|e| anyhow!("save: {e}"))?;
     let signed = Psbt::from_str(&bl(|| rgb.sign_psbt(psbt.to_string(), None))?)?;
@@ -249,6 +263,29 @@ pub(crate) async fn pay_from_rgb_output(
     let txid = regtest.send_raw(&tx)?;
     regtest::mine(1)?;
     Ok(txid)
+}
+
+/// A vanilla (non-colorable, allocation-free) UTXO of `rgb` worth at least `need` sat, funded from
+/// the regtest faucet when the wallet has none.
+async fn vanilla_funding(who: &str, rgb: &mut RgbWallet, online: &Online, need: u64) -> anyhow::Result<(OutPoint, u64, bitcoin::psbt::Input)> {
+    let mut funded = false;
+    for i in 0..20 {
+        let unspents = bl(|| rgb.list_unspents(Some(online.clone()), false, false))?;
+        if let Some(u) = unspents.iter().find(|u| !u.utxo.colorable && u.utxo.exists && u.rgb_allocations.is_empty() && u.utxo.btc_amount >= need) {
+            let op = OutPoint::from_str(&u.utxo.outpoint.to_string())?;
+            let input = bl(|| rgb.psbt_input_for_utxo(u.utxo.outpoint.clone()))?;
+            return Ok((op, u.utxo.btc_amount, input));
+        }
+        if !funded {
+            let addr = Address::from_str(&bl(|| rgb.get_address())?)?.assume_checked();
+            println!("[{who}] no vanilla UTXO >= {need} sat: faucet to {addr}");
+            regtest::faucet(&addr, "0.001")?;
+            funded = true;
+        }
+        println!("[{who}] waiting for the faucet UTXO ({i})");
+        tokio::time::sleep(Duration::from_secs(3)).await;
+    }
+    anyhow::bail!("[{who}] no vanilla UTXO to pay the fee")
 }
 
 /// Receiver: import the (possibly empty) offline proof, accept, refresh until settled.

@@ -10,7 +10,8 @@
 //! `scenario refresh`: jump-in to V -> refresh V -> V' (T_f in F) -> hop V' -> Bob (T1/T2) ->
 //!     Bob unilateral exit -> Bob sends on-chain to Carol. PASS = Carol settled.
 //! `scenario collab-exit`: jump-in to V -> collaborative exit of V to Alice's on-chain address O = C:vout
-//!     (T_f in F) -> Alice spends O on-chain to Dave. PASS = Dave settled.
+//!     (T_f in F) -> Alice spends O on-chain to Dave -> Dave spends it on-chain to Erin, a wallet
+//!     that never saw the history (F is never mined). PASS = Dave and Erin settled.
 //! `scenario forfeit-negatives`: negative tests (malformed checkpoint / forfeit OP_RETURNs rejected by arkd,
 //!     attestation of a commitment-less forfeit fails).
 use crate::offchain_transfer::{HopResult, arkd_virtual_txs_known, outs, rgb_hop, wait_vtxo};
@@ -42,6 +43,7 @@ const BL_DAVE: u64 = 606;
 const ALICE_TO_BOB_SAT: u64 = 20_000;
 const EXIT_SAT: u64 = 20_000;
 const RECEIVER_SAT: u64 = 2_000;
+const BL_ERIN: u64 = 808;
 const ONCHAIN_BTC: &str = "0.01";
 const EXIT_SPEND_FEE_SAT: u64 = 600;
 
@@ -684,10 +686,29 @@ pub async fn run_exit() -> anyhow::Result<()> {
     }
     step("4. Dave attests F and accepts");
     let settled = receive_with_attestation("dave", &dave, &mut dave_rgb, &dave_online, &regtest, &fc, v, c, &cons, &asset_id, &mut rec).await?;
-    let pass = settled == ISSUE_AMOUNT;
+    ensure!(settled == ISSUE_AMOUNT, "Dave balance check failed");
+
+    // received on-chain is not enough: the asset must move on, to someone who never saw F
+    step("5. Dave spends the received output on-chain to Erin (fresh wallet), forwarding the proof");
+    let (mut erin_rgb, erin_online) = bl(|| rgb_wallet("erin", &state))?;
+    let erin_recv = bl(|| erin_rgb.witness_receive(None, Assignment::Fungible(ISSUE_AMOUNT), now() + 86_400, vec![], 1))?;
+    let erin_script = rgb_lib::utils::script_buf_from_recipient_id(erin_recv.recipient_id.clone())?
+        .ok_or_else(|| anyhow!("erin: not a witness recipient"))?;
+    let cons_de = state.join("dave_to_erin.rgbc");
+    let de = crate::long_offline::pay_from_rgb_output(
+        "dave", &mut dave_rgb, &dave_online, &regtest, OutPoint { txid: ad, vout: 1 }, RECEIVER_SAT, contract_id, ISSUE_AMOUNT, erin_script, BL_ERIN, &cons_de,
+    )
+    .await?;
+    rec("dave_to_erin_txid", de.to_string());
+    if offline {
+        let st = crate::proof::build_proof(&dave, &regtest, &[fid, ad, de], &[crate::proof::proof_path(&cons)], &crate::proof::proof_path(&cons_de)).await?;
+        rec("proof_de", format!("{} B, {} PSBTs, {} witnesses", st.bytes, st.n_psbts, st.n_witnesses));
+    }
+    let erin_settled = receive_with_attestation("erin", &dave, &mut erin_rgb, &erin_online, &regtest, &fc, v, c, &cons_de, &asset_id, &mut rec).await?;
+    let pass = erin_settled == ISSUE_AMOUNT;
     rec("PASS", pass.to_string());
     println!("\nCOLLABORATIVE EXIT RESULT: {}", if pass { "PASS" } else { "FAIL" });
-    ensure!(pass, "Dave balance check failed");
+    ensure!(pass, "Erin balance check failed");
     Ok(())
 }
 
