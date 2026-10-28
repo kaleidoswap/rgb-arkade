@@ -860,7 +860,20 @@ fn with_cookie(cookie: Option<String>) -> HeaderMap {
 
 async fn get_state(State(app): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     match session(&app, &headers, false) {
-        Ok(Some((s, cookie))) => (StatusCode::OK, with_cookie(cookie), Json(serde_json::to_value(s.shared.lock().unwrap().clone()).unwrap_or_default())),
+        Ok(Some((s, cookie))) => {
+            let mut view = s.shared.lock().unwrap().clone();
+            if app.public {
+                // the server's directories are nobody else's business
+                let dirs = [view.state_dir.clone(), crate::paths::root().display().to_string()];
+                for e in &mut view.log {
+                    for d in &dirs {
+                        e.msg = e.msg.replace(&format!("{d}/"), "").replace(d.as_str(), "your wallet folder");
+                    }
+                }
+                view.state_dir.clear();
+            }
+            (StatusCode::OK, with_cookie(cookie), Json(serde_json::to_value(view).unwrap_or_default()))
+        }
         // public visitor without wallets yet: they are created by the first action
         Ok(None) => (StatusCode::OK, HeaderMap::new(), Json(serde_json::to_value(Shared { public: true, explorer: app.explorer.clone(), ..Default::default() }).unwrap_or_default())),
         Err((code, e)) => (code, HeaderMap::new(), Json(serde_json::json!({"ok": false, "error": e}))),

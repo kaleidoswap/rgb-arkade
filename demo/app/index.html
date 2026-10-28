@@ -120,6 +120,31 @@ input[type=number] { width: 96px; background: var(--card); border: 1px solid var
 .row + .row { margin-top: 8px; }
 .why { font-size: 13px; color: var(--dim); }
 
+/* first minute: welcome, narrated demo, recap */
+.welcome { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 28px; align-items: center; padding: 30px 32px; margin-bottom: 18px; border-radius: 16px; background: var(--card); border: 1px solid var(--line); }
+@media (max-width: 900px) { .welcome { grid-template-columns: 1fr; padding: 22px 18px; } }
+.welcome h1 { margin: 0 0 10px; font-size: 2.1rem; line-height: 1.15; font-weight: 700; letter-spacing: -.03em; }
+.welcome p.lead { margin: 0 0 20px; color: var(--fg2); font-size: 16px; max-width: 56ch; }
+.welcome .ctas { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.welcome .btn.cta { padding: 12px 20px; font-size: 16px; }
+.welcome .quiet { background: none; border: 0; color: var(--dim); cursor: pointer; text-decoration: underline; text-underline-offset: 3px; font-size: 14px; }
+.welcome .quiet:hover { color: var(--fg); }
+.steps3 { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; counter-reset: s; }
+.steps3 li { counter-increment: s; display: grid; grid-template-columns: 34px 1fr; gap: 12px; align-items: start; padding: 12px 14px; border-radius: 12px; background: var(--card2); border: 1px solid var(--line); }
+.steps3 li::before { content: counter(s); width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; background: var(--bg); border: 1px solid var(--line2); }
+.steps3 b { display: block; } .steps3 span { color: var(--dim); font-size: 14px; }
+.narr { margin-bottom: 14px; padding: 14px 16px; border-radius: 12px; border: 1px solid rgba(21,233,154,.35); background: rgba(21,233,154,.05); }
+.narr .top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.narr .n { font-size: 13px; color: var(--dim); white-space: nowrap; }
+.narr .t { font-weight: 700; font-size: 16px; }
+.narr p { margin: 6px 0 0; color: var(--fg2); max-width: 90ch; }
+.narr .wait { color: var(--warn); font-size: 13px; }
+.narr .bar { height: 4px; border-radius: 3px; background: var(--line); margin-top: 12px; overflow: hidden; }
+.narr .bar i { display: block; height: 100%; background: linear-gradient(135deg, #15E99A 0%, #6F32FF 100%); transition: width .3s var(--ease); }
+.narr.done { border-color: rgba(111,50,255,.45); background: rgba(111,50,255,.07); }
+.narr.done ul { margin: 8px 0 12px; padding-left: 18px; color: var(--fg2); }
+.wallet.focus { border-color: var(--rgb); box-shadow: 0 0 0 3px rgba(21,233,154,.12); }
+
 /* activity */
 #activity { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; max-height: calc(100vh - 150px); position: sticky; top: 76px; }
 @media (max-width: 1280px) { #activity { position: static; max-height: none; } }
@@ -228,7 +253,7 @@ a.ext { color: var(--dim); text-decoration: none; font-size: 12px; } a.ext:hover
 </header>
 
 <section id="play" class="wrap">
-  <div class="toolbar">
+  <div class="toolbar" id="toolbar">
     <button class="btn cta" id="demoBtn" onclick="runDemo()">▶ Run the guided demo</button>
     <div class="layers"><span class="legend-ic"><svg class="ic" width="16" height="16"><use href="#ic-btc"/></svg>Bitcoin</span><span class="legend-ic"><svg class="ic" width="16" height="16"><use href="#ic-ark"/></svg>Arkade</span><span class="legend-ic"><svg class="ic" width="16" height="16"><use href="#ic-rgb"/></svg>RGB asset</span><span class="legend-ic"><svg class="ic" width="16" height="16"><use href="#ic-rgbark"/></svg>RGB on Arkade</span></div>
     <div class="spacer"></div>
@@ -239,8 +264,24 @@ a.ext { color: var(--dim); text-decoration: none; font-size: 12px; } a.ext:hover
       <button class="btn sm danger" id="resetB" onclick="resetAll()">Reset</button>
     </div>
   </div>
-  <div class="banner" id="demoBanner" hidden><span class="spin"></span><b>Guided demo</b><span id="demoText" class="dim"></span><span class="spacer"></span><button class="btn sm" onclick="stopDemo()">Stop after this step</button></div>
-  <div class="grid">
+  <div class="welcome" id="welcome" hidden>
+    <div>
+      <h1>Send a bitcoin token in a second, and check it yourself</h1>
+      <p class="lead">A live test network running RGB assets on Arkade. You get two test wallets, Alice and Bob: watch them create a token, send it off-chain instantly, and take it back to bitcoin. The receiver verifies every transfer itself, without trusting the server.</p>
+      <div class="ctas">
+        <button class="btn cta" onclick="startTour()">▶ Start the demo</button>
+        <button class="btn" onclick="tab('learn')">How does it work?</button>
+        <button class="quiet" onclick="justWallets()">Just give me the wallets</button>
+      </div>
+    </div>
+    <ol class="steps3">
+      <li><div><b>Get two test wallets</b><span>Free and ready in seconds. Nothing to install, no real money.</span></div></li>
+      <li><div><b>Watch the guided demo</b><span>About a minute. Each step says what is happening and why.</span></div></li>
+      <li><div><b>Try it yourself</b><span>Pick a coin and send it, refresh it or take it back to bitcoin.</span></div></li>
+    </ol>
+  </div>
+  <div class="narr" id="demoBanner" hidden></div>
+  <div class="grid" id="grid">
     <article class="wallet" id="w0"></article>
     <article class="wallet" id="w1"></article>
     <aside id="activity"><h3>What happened</h3><div id="log"></div></aside>
@@ -383,11 +424,13 @@ function checksHtml(g) {
   if (g.lines.some(l => /swept by the operator/.test(l))) items.push('Chain shows the old batch was swept');
   return items.length ? `<ul class="checks">${items.map(i => `<li>${esc(i)}</li>`).join('')}</ul>` : '';
 }
+// server paths stay on the server: keep only the file name
+const clean = l => String(l).replace(/(?:\/[\w.@~-]+)+\/([\w.@~-]+)/g, '$1');
 function evHtml(g) {
   const took = g.end ? Math.max(1, g.end - g.t) : (Date.now() / 1000 - g.t);
-  const lines = [...g.ok, ...g.lines];
-  const body = g.status === 'running' ? `<div class="now"><span class="spin"></span>${esc(short((g.lines[g.lines.length - 1] || 'working…').replace(/\b[0-9a-f]{64}(:\d+)?/g, m => short(m)), 110, 0))}</div>`
-    : g.status === 'error' ? `<div class="err">${esc(g.err)}</div>` : checksHtml(g) + flowHtml(g);
+  const lines = [...g.ok, ...g.lines].map(clean);
+  const body = g.status === 'running' ? `<div class="now"><span class="spin"></span>${esc(short(clean(g.lines[g.lines.length - 1] || 'working…').replace(/\b[0-9a-f]{64}(:\d+)?/g, m => short(m)), 110, 0))}</div>`
+    : g.status === 'error' ? `<div class="err">${esc(clean(g.err))}</div>` : checksHtml(g) + flowHtml(g);
   const det = lines.length && g.status !== 'note' ? `<details><summary>Details</summary>${lines.map(l => `<div class="ln">${esc(l)}</div>`).join('')}</details>` : '';
   return `<div class="ev ${g.status} L-${layerOf(g.action)}" data-k="${g.t}${esc(g.action)}"><div class="h"><span class="title">${esc(headline(g))}</span><span class="meta">${hhmm(g.t)}${g.status !== 'note' ? ' · ' + dur(took) : ''}</span></div>${body}${det}</div>`;
 }
@@ -474,6 +517,8 @@ function render() {
   else { busySince = null; bc.className = 'chip'; bc.innerHTML = '<span class="dot"></span>idle'; }
   document.getElementById('arkd').innerHTML = `<span class="dot"></span>arkd ${esc(st.arkd && st.arkd.version || '?')}`;
   document.getElementById('height').textContent = 'block ' + fmt(st.height) + (st.automine ? ' · auto' : '');
+  document.getElementById('arkd').hidden = !(st.arkd && st.arkd.version);
+  document.getElementById('height').hidden = !st.height;
   document.getElementById('amBtn').textContent = st.automine ? 'Stop auto-mine' : 'Auto-mine';
   document.getElementById('demoBtn').disabled = !!(busy || demo);
   document.getElementById('explorerLink').href = explorerRoot();
@@ -484,6 +529,7 @@ function render() {
     er.dataset.mode = String(blocks);
     er.innerHTML = `<button class="btn sm" onclick="act({action:'set_expiry', seconds:+v('exp')})" title="${blocks ? 'Batch expiry for new batches, in blocks (max 511 on this stack). To watch a sweep: refresh, then mine that many blocks.' : 'Batch expiry for new batches. 600 s shows a sweep and a recovery in about 15 min.'}">Batch expiry</button><input id="exp" type="number" value="${blocks ? 500 : 604672}" min="1" aria-label="batch expiry"> ${blocks ? 'blocks' : 's'}`;
   }
+  showWelcome(); if (demo) drawNarr();
   const gs = groups(st.log);
   const done = new Set(gs.filter(g => g.status === 'ok').map(g => stepOf(g.action)).filter(Boolean));
   const running = gs.length && gs[gs.length - 1].status === 'running';
@@ -518,6 +564,38 @@ async function poll() {
   } catch (e) { const bc = document.getElementById('busy'); bc.className = 'chip'; bc.innerHTML = '<span class="dot off"></span>app unreachable'; }
 }
 
+// ---------------------------------------------------------------- first minute
+let welcomeOff = false, demoDone = false, narr = null;
+const hasActivity = () => groups(st.log || []).some(g => g.status === 'ok' && stepOf(g.action));
+function showWelcome() {
+  const on = !!st && !welcomeOff && !demo && !demoDone && !hasActivity();
+  document.getElementById('welcome').hidden = !on;
+  document.getElementById('grid').hidden = on;
+  document.getElementById('toolbar').hidden = on;
+}
+function startTour() { welcomeOff = true; runDemo(); }
+function justWallets() { welcomeOff = true; showWelcome(); if (!(st.wallets || []).length) act({action: 'sync'}); }
+function drawNarr() {
+  const el = document.getElementById('demoBanner');
+  if (demoDone) {
+    el.className = 'narr done'; el.hidden = false;
+    el.innerHTML = `<div class="top"><span class="t">That was RGB on Arkade</span></div>
+      <ul><li>A token issued on bitcoin moved onto an Arkade VTXO and changed hands off-chain in about a second.</li>
+      <li>Each receiver checked the transfer with the operator switched off, from a proof and the bitcoin chain only.</li>
+      <li>Refreshes and exits carried the token along; on bitcoin it is an ordinary RGB asset again.</li></ul>
+      <div class="row"><b>Your turn:</b><span class="why">pick a coin with a green ring and send it to the other wallet.</span><span class="spacer"></span>
+      <button class="btn sm" onclick="tab('learn')">How it works</button><a class="btn sm" href="${explorerRoot()}" target="_blank" rel="noopener">See it on the explorer ↗</a><button class="btn sm" onclick="demoDone = false; drawNarr()">Close</button></div>`;
+    return;
+  }
+  if (!demo || !narr) { el.hidden = true; return; }
+  const running = groups(st.log || []).slice(-1)[0];
+  const waiting = running && running.status === 'running' && running.lines.some(l => /waiting for other visitors/.test(l));
+  el.className = 'narr'; el.hidden = false;
+  el.innerHTML = `<div class="top"><span class="spin"></span><span class="n">Step ${narr.i} of ${narr.n}</span><span class="t">${esc(narr.label)}</span>${waiting ? '<span class="wait">waiting for other visitors (one action at a time)</span>' : ''}<span class="spacer"></span>${demo.stop ? '<span class="why">stopping after this step…</span>' : '<button class="btn sm" onclick="stopDemo()">Stop after this step</button>'}</div>
+    ${narr.why ? `<p>${esc(narr.why)}</p>` : ''}<div class="bar"><i style="width:${Math.round(100 * (narr.i - 1) / narr.n)}%"></i></div>`;
+  NAMES.forEach((n, i) => document.getElementById('w' + i).classList.toggle('focus', narr.who === n));
+}
+
 // ---------------------------------------------------------------- guided demo
 async function waitIdle(from) {
   for (;;) {
@@ -526,47 +604,51 @@ async function waitIdle(from) {
     if (!st.busy) { const err = st.log.slice(from).find(e => e.kind === 'error'); return err ? err.msg : null; }
   }
 }
-async function step(label, body) {
-  document.getElementById('demoText').textContent = label;
+async function step(i, n, [who, label, why, body]) {
+  narr = {i, n, who, label, why}; drawNarr();
   const from = st.log.length;
-  if (!(await act(body))) throw new Error('could not start: ' + label);
+  if (!(await act(body()))) throw new Error('could not start: ' + label);
   const err = await waitIdle(from);
   if (err) throw new Error(label + ': ' + err);
 }
-function stopDemo() { if (demo) demo.stop = true; document.getElementById('demoText').textContent = 'stopping after this step…'; }
+function stopDemo() { if (demo) demo.stop = true; drawNarr(); }
 async function runDemo() {
   if (demo || busy) return;
   tab('play');
+  welcomeOff = true; demoDone = false;
   demo = { stop: false };
-  document.getElementById('demoBanner').hidden = false; render();
+  showWelcome();
   if (!(st.wallets || []).length) {
-    document.getElementById('demoText').textContent = 'Creating your wallets';
+    narr = {i: 0, n: 8, who: '', label: 'Creating your wallets', why: 'Two fresh regtest wallets, Alice and Bob, each with an Arkade client and an RGB wallet.'}; drawNarr();
     await act({action: 'sync'});
-    while (!(st.wallets || []).length || st.busy) { await new Promise(r => setTimeout(r, 1500)); await poll(); }
+    while (!(st.wallets || []).length || st.busy) { await new Promise(r => setTimeout(r, 1500)); await poll(); drawNarr(); }
   }
   let A = null;
   const asset = () => { if (!A) { const h = (st.wallets[0].holdings || []).slice(-1)[0]; A = h && h.asset_id; } return A; };
   const seq = [
-    ['Alice adds bitcoin to Arkade', () => ({action: 'board', who: 'alice', sats: 100000})],
-    ['Bob adds bitcoin to Arkade', () => ({action: 'board', who: 'bob', sats: 100000})],
-    ['Alice issues 1,000 units and brings them into Arkade', () => ({action: 'issue', who: 'alice'})],
-    ['Alice sends 300 to Bob, off-chain', () => ({action: 'send', from: 'alice', to: 'bob', asset_id: asset(), amount: 300})],
-    ['Bob sends 100 back, off-chain', () => ({action: 'send', from: 'bob', to: 'alice', asset_id: asset(), amount: 100})],
-    ['Bob refreshes into a new batch', () => ({action: 'refresh', who: 'bob', asset_id: asset()})],
-    ['Alice exits to bitcoin with the operator', () => ({action: 'collab_exit', who: 'alice', asset_id: asset()})],
-    ['Alice sends to Bob on bitcoin', () => ({action: 'onchain_send', from: 'alice', to: 'bob', asset_id: asset()})],
+    ['alice', 'Alice adds bitcoin to Arkade', 'She deposits 100,000 sat and gets a VTXO: bitcoin that can move off-chain, instantly.', () => ({action: 'board', who: 'alice', sats: 100000})],
+    ['bob', 'Bob adds bitcoin to Arkade', 'Bob does the same, so he has a VTXO of his own.', () => ({action: 'board', who: 'bob', sats: 100000})],
+    ['alice', 'Alice creates a token and brings it into Arkade', 'She issues 1,000 units of a test token with RGB on bitcoin, then moves them onto her VTXO. Watch the green ring appear.', () => ({action: 'issue', who: 'alice'})],
+    ['bob', 'Alice sends 300 to Bob, off-chain', 'Two Arkade transactions carry the transfer, final in about a second. Bob checks it with the operator switched off.', () => ({action: 'send', from: 'alice', to: 'bob', asset_id: asset(), amount: 300})],
+    ['alice', 'Bob sends 100 back', 'Transfers chain: Bob spends the token he just received, again off-chain.', () => ({action: 'send', from: 'bob', to: 'alice', asset_id: asset(), amount: 100})],
+    ['bob', 'Bob refreshes his VTXO', 'VTXOs expire with their batch, so wallets roll them into a new one. The token follows.', () => ({action: 'refresh', who: 'bob', asset_id: asset()})],
+    ['alice', 'Alice takes her tokens back to bitcoin', 'A collaborative exit: the operator pays her a normal bitcoin output, and the tokens move onto it.', () => ({action: 'collab_exit', who: 'alice', asset_id: asset()})],
+    ['bob', 'Alice sends to Bob on bitcoin', 'From there it is an ordinary RGB transfer on bitcoin, mined in a block.', () => ({action: 'onchain_send', from: 'alice', to: 'bob', asset_id: asset()})],
   ];
   if (/blocks/.test(exitDelay())) seq.push(
-    ['Bob exits alone, no operator needed', () => ({action: 'unilateral_exit', who: 'bob', asset_id: asset()})],
-    ['Bob sends to Alice on bitcoin after the timelock', () => ({action: 'onchain_send', from: 'bob', to: 'alice', asset_id: asset()})]);
+    ['bob', 'Bob leaves Arkade alone', 'No operator needed: Bob publishes his branch of the batch on bitcoin himself.', () => ({action: 'unilateral_exit', who: 'bob', asset_id: asset()})],
+    ['alice', 'Bob sends to Alice on bitcoin', 'After a timelock the output, and the token on it, are his to spend.', () => ({action: 'onchain_send', from: 'bob', to: 'alice', asset_id: asset()})]);
+  let ok = false;
   try {
-    for (const [i, [label, body]] of seq.entries()) {
-      if (demo.stop) { toast('ok', 'Demo stopped', label); break; }
-      await step(`${i + 1}/${seq.length} · ${label}`, body());
+    for (const [i, s] of seq.entries()) {
+      if (demo.stop) break;
+      await step(i + 1, seq.length, s);
     }
-    if (!demo.stop) toast('ok', 'Demo complete', 'Now try it yourself: pick a coin.');
+    ok = !demo.stop;
   } catch (e) { toast('err', 'Demo stopped', String(e.message || e)); }
-  demo = null; document.getElementById('demoBanner').hidden = true; render();
+  demo = null; narr = null; demoDone = ok;
+  NAMES.forEach((n, i) => document.getElementById('w' + i).classList.remove('focus'));
+  drawNarr(); render();
 }
 
 // ---------------------------------------------------------------- learn: three lanes, built step by step
