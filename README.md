@@ -110,7 +110,7 @@ Limits: one action runs at a time; regtest only; an action interrupted by a rest
 | `refresh` | forfeit commitment | Refresh a colored VTXO, then hop, exit, on-chain send; Carol `settled: 1000` | ~10 min |
 | `collab-exit` | forfeit commitment | Collaborative exit to an on-chain address, then on-chain send; Dave `settled: 1000` | ~3 min |
 | `forfeit-negatives` | forfeit commitment | Malformed checkpoint/forfeit commitments are rejected by arkd; unattested forfeits are rejected by receivers | ~3 min |
-| any of the above + `--offline-proof` | offline proof | Receivers validate with arkd paused, from consignment + Ark proof + chain; 9 kinds of tampered proofs are rejected | same |
+| any of the above + `--offline-proof` | offline proof | Receivers validate with arkd paused, from consignment + Ark proof + chain; 9 kinds of tampered proofs are rejected (`offchain-transfer` also: a key-path-only witness with no operator signature) | same |
 | `multi-user` | batches | One batch with 4 users, 2 assets and a BTC-only VTXO, after an off-chain send with BTC + asset change; Ark balances are checked | ~5 min |
 | `failed-batch` | batches, rollback | A round fails (missing forfeit), the colored forfeit is rolled back, and the retry succeeds | ~3 min |
 | `fraud` | fraud evidence | Colluding operator (DB edit through `tools/arkdb`) co-signs two forfeits; fraud proof verified offline; online detection | ~5 min |
