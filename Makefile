@@ -1,12 +1,13 @@
 # rgb-arkade: common tasks. See README.md.
 SCENARIO ?= offchain-transfer
 
-.PHONY: help setup build regtest-up regtest-down app scenario test test-all bench patches-check list
+.PHONY: help setup build regtest-up regtest-up-fast regtest-down app scenario test test-all bench patches-check list
 
 help:
 	@echo "make setup        clone pinned upstreams, apply patches, build arkd:rgb, tools/arkdb and the demo"
 	@echo "make build        build the demo (cargo build in demo/)"
 	@echo "make regtest-up   start the regtest stack (arkd:rgb + bitcoind + electrs + pools mirror)"
+	@echo "make regtest-up-fast  restart the stack clean with exit delays in blocks (quick suite in minutes, no time-scaled scenarios)"
 	@echo "make regtest-down stop the regtest stack"
 	@echo "make app          start the regtest stack if needed and serve the prototype app on :8080 (PORT=...)"
 	@echo "make list         list scenarios"
@@ -24,6 +25,9 @@ build:
 
 regtest-up:
 	scripts/regtest-up.sh
+
+regtest-up-fast:
+	REGTEST_PROFILE=fast scripts/regtest-up.sh clean
 
 regtest-down:
 	cd arkade-regtest && node regtest.mjs stop; docker rm -f rgbarkade-pools >/dev/null 2>&1 || true

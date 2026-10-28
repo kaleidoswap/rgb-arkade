@@ -58,7 +58,7 @@ make regtest-up   # start the regtest stack; prints arkd's /v1/info (version v0.
 make list         # list scenarios
 make scenario SCENARIO=offchain-transfer
 make scenario SCENARIO=collab-exit ARGS=--offline-proof
-make test         # quick regression suite
+make test         # quick regression suite (in minutes after make regtest-up-fast: exit delays in blocks)
 ```
 
 Paths: everything (state, logs, regtest checkout, watchtower data) lives under the repository root, or under `$RGB_ARKADE_DIR` if set. The scripts use `$CARGO_TARGET_DIR` if you build the demo elsewhere. Each run writes `state/run-<ts>-<scenario>/` (wallets, consignments, proofs, `summary.json`) and prints a `... RESULT: PASS` line.
@@ -122,6 +122,7 @@ Limits: one action runs at a time; regtest only; an action interrupted by a rest
 ```bash
 scripts/run-scenario.sh refresh                 # one scenario, log in logs/scenario-refresh.log
 scripts/run-all.sh quick                        # everything except the time-scaled scenarios (make test)
+make regtest-up-fast                            # restart clean with exit delays in blocks: quick suite in minutes; back to seconds for the time-scaled ones: scripts/regtest-up.sh clean
 scripts/run-all.sh                              # full suite, ~3 h (make test-all)
 scripts/bench.sh                                # payload size / validation time, see docs/test-results.md
 ```

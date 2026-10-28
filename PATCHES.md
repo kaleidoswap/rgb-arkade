@@ -46,4 +46,4 @@ All changes are opt-in: without the new fields, arkd behaves as upstream.
 
 ## arkade-regtest
 
-`docker/compose.*.yml` use `ARKD_IMAGE` (set to `arkd:rgb`), and the mempool container fetches its pools list from a local `pools-mirror` (the `pools/` directory, served by nginx) because the containers have no internet access. `arkade-regtest.env` is the `.env` used: `vtxoMinAmount` 1, zero fees, 512 s exit delays, and a 604672 s (about 7 days) batch expiry. Scenarios change the expiry at runtime through the admin API.
+`docker/compose.*.yml` use `ARKD_IMAGE` (set to `arkd:rgb`), and the mempool container fetches its pools list from a local `pools-mirror` (the `pools/` directory, served by nginx) because the containers have no internet access. `arkade-regtest.env` is the `.env` used: `vtxoMinAmount` 1, zero fees, 512 s exit delays, and a 604672 s (about 7 days) batch expiry. Scenarios change the expiry at runtime through the admin API. `arkade-regtest.fast.env` (`REGTEST_PROFILE=fast`, `make regtest-up-fast`) puts every delay in blocks (exits 10, boarding 20, expiry 500): arkd needs all delays of one type, so the time-scaled scenarios refuse to run on it.

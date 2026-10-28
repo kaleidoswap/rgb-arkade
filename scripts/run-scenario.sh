@@ -15,6 +15,11 @@ L=$R/logs/scenario-$NAME.log
 cd "$R/demo"
 trap 'stop_miner; unpause_arkd' EXIT
 
+case "$NAME" in exit-watchtower|long-offline|sweep-recovery)
+  grep -q '^ARKD_VTXO_TREE_EXPIRY=[0-9]\{4,\}' "$R/arkade-regtest/.env" ||
+    { echo "$NAME needs the default (seconds) profile: scripts/regtest-up.sh clean"; exit 2; } ;;
+esac
+
 case "$NAME" in
   exit-watchtower)
     setexp 1024 wait

@@ -1,10 +1,11 @@
 #!/bin/bash
 # Start the arkade-regtest stack (bitcoind, electrs/esplora, arkd:rgb, arkd-wallet) plus the offline
 # mempool pools mirror, and wait until arkd answers. Usage: scripts/regtest-up.sh [clean]
+# REGTEST_PROFILE=fast uses patches/arkade-regtest.fast.env (delays in blocks); switching profile needs clean.
 set -eu
 source "$(dirname "$0")/lib.sh"
 cd "$R/arkade-regtest"
-[ -f .env ] || cp "$R/patches/arkade-regtest.env" .env
+cp "$R/patches/arkade-regtest${REGTEST_PROFILE:+.$REGTEST_PROFILE}.env" .env
 [ "${1:-}" = clean ] && node regtest.mjs clean
 node regtest.mjs start --profile ark > "$R/logs/regtest-start.log" 2>&1 &
 START=$!
