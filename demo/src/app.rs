@@ -161,7 +161,7 @@ impl Action {
             Action::Recover { who, .. } => format!("{who}: sweep recovery"),
             Action::SweepBtc { who } => format!("{who}: sweep exited BTC"),
             Action::Mine { blocks } => format!("mine {} block(s)", blocks.unwrap_or(1)),
-            Action::SetExpiry { seconds } => format!("set batch expiry {seconds}s"),
+            Action::SetExpiry { seconds } => format!("set batch expiry {seconds} {}", if *seconds < 512 { "blocks" } else { "s" }),
             Action::Sync => "sync".into(),
             Action::Reset => "reset".into(),
         }
@@ -604,7 +604,7 @@ async fn run_action(c: &mut Core, a: &Action, lg: &Logger) -> anyhow::Result<()>
             let r = set_expiry(seconds)?;
             lg.info(format!("arkd admin: vtxoTreeExpiry={seconds} ({r}); batches started before keep the old expiry, wait ~45 s"));
             tokio::time::sleep(std::time::Duration::from_secs(45)).await;
-            lg.push("ok", format!("new batches expire after {seconds}s"));
+            lg.push("ok", format!("new batches expire after {seconds} {}", if seconds < 512 { "blocks" } else { "s" }));
         }
         Action::Sync => {}
         Action::Reset => bail!("reset is handled by the worker"),
@@ -802,6 +802,11 @@ async fn init_in(shared: &Arc<StdMutex<Shared>>, state: PathBuf) -> anyhow::Resu
     shared.lock().unwrap().arkd = serde_json::json!({
         "version": info.version, "signer": info.signer_pk.to_string(), "dust": info.dust.to_sat(),
         "unilateral_exit_delay": format!("{:?}", info.unilateral_exit_delay),
+        "exit_delay": match info.unilateral_exit_delay.to_relative_lock_time() {
+            Some(bitcoin::relative::LockTime::Blocks(h)) => format!("{} blocks", h.value()),
+            Some(bitcoin::relative::LockTime::Time(t)) => format!("{} s", u32::from(t.value()) * 512),
+            None => "?".into(),
+        },
     });
     let core = Core { state, regtest, ops: operators(&info), wallets, seq: saved.seq };
     save(&core, shared)?;
