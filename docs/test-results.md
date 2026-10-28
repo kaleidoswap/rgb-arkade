@@ -195,3 +195,9 @@ An output that delivers an RGB asset on-chain carries only the payment's sats (2
 ### Stock balance after Arkade spends (28 Oct 2026, CET)
 
 rgb-lib marks a wallet UTXO spent only when it broadcasts the spending tx, so after a jump-in or a spend built outside it the stock balance kept the moved allocations (Alice showed `spendable: 1000` of an asset she had sent away). The custom coloring paths now mark their wallet inputs spent and `ark_rollback_transfer` unmarks them. `collab-exit` (online and `--offline-proof`) checks it: Alice and Dave end at `settled: 0, spendable: 0`, Erin at 1000. Quick suite on the fast profile, run alone: 11/11 PASS (15:33–15:48), failed-batch rollback included.
+
+### arkd master with three changes (28 Oct 2026, CET)
+
+arkd master `f863e48` (v0.9.16 + the btcd v2 migration) with only three changes: data `OP_RETURN` in the checkpoint (with the checkpoint output at vout 1), the same in the forfeit, and a 0-sat `OP_RETURN <32 bytes>` taken as data instead of a sub-dust VTXO. `forfeit-cosign` is dropped (master #1110 signs forfeits at collection time), and so are `subdust-restart-fix` and `recovery-forfeit`. Image `arkd:rgb-master` on `arkd:v0.9.16`, `arkd-wallet:v0.9.16`, fast profile: the quick suite passes, 11 of 11 (`forfeit-negatives` after making its positive control use a fresh wallet: master bans a VTXO after repeated invalid forfeits). `multihop-exit` passes, so the operator broadcasts its stored forfeit without our co-sign patch. Not run on master: `sweep-recovery` (needs `recovery-forfeit`) and the other time-scaled scenarios.
+
+Found while rebasing, fixed in both patches: on finalizing an off-chain tx arkd watched `TxOut[0]` of each checkpoint, which is the data `OP_RETURN` when present; the wallet rejected the script, so that checkpoint went unwatched until the next restart.

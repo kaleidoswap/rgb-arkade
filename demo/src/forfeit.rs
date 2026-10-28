@@ -776,6 +776,12 @@ pub async fn run_neg() -> anyhow::Result<()> {
         }
     }
 
+    // arkd (since v0.9.16) bans a VTXO whose owner keeps submitting invalid forfeits: the
+    // positive control and the cases after it run on a fresh wallet
+    let (alice, _) = ark_client("carol", regtest.clone(), &state).await?;
+    board("carol", &alice, "0.001").await?;
+    v = first_vtxo(&alice).await?;
+
     step("POS control: well-formed 32B forfeit OP_RETURN accepted, attestation succeeds");
     let (addr, _) = alice.get_offchain_address().await?;
     let mut f_ok: Option<Transaction> = None;

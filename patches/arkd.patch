@@ -83,10 +83,20 @@ index 847c5002..0fb07696 100644
  
  					// populate newNextVtxos with checkpoints inputs
 diff --git a/internal/core/application/service.go b/internal/core/application/service.go
-index 959ab5ef..681f293e 100644
+index 959ab5ef..22d48052 100644
 --- a/internal/core/application/service.go
 +++ b/internal/core/application/service.go
-@@ -908,11 +908,21 @@ func (s *service) SubmitOffchainTx(
+@@ -349,7 +349,8 @@ func (s *service) registerEventHandlers() {
+ 				checkpointTxsByOutpoint[ptx.UnsignedTx.TxIn[0].PreviousOutPoint.String()] = TxData{
+ 					Tx: tx, Txid: txid,
+ 				}
+-				script := hex.EncodeToString(ptx.UnsignedTx.TxOut[0].PkScript)
++				cpVout := offchain.CheckpointOutputIndex(ptx.UnsignedTx) // [rgb-arkade patch 1]
++				script := hex.EncodeToString(ptx.UnsignedTx.TxOut[cpVout].PkScript)
+ 				checkpointScripts = append(
+ 					checkpointScripts,
+ 					script,
+@@ -908,11 +909,21 @@ func (s *service) SubmitOffchainTx(
  			})
  		}
  
@@ -108,7 +118,7 @@ index 959ab5ef..681f293e 100644
  		})
  	}
  
-@@ -1287,7 +1297,8 @@ func (s *service) FinalizeOffchainTx(
+@@ -1287,7 +1298,8 @@ func (s *service) FinalizeOffchainTx(
  			return errors.INVALID_PSBT_INPUT.New("checkpoint tx has no outputs").
  				WithMetadata(errors.InputMetadata{Txid: txid, InputIndex: inIndex})
  		}
@@ -118,7 +128,7 @@ index 959ab5ef..681f293e 100644
  		if !bytes.Equal(checkpointOutputScript, expectedOutputScript) {
  			return errors.INVALID_PSBT_INPUT.New(
  				"invalid output script: got %x expected %x",
-@@ -1303,7 +1314,7 @@ func (s *service) FinalizeOffchainTx(
+@@ -1303,7 +1315,7 @@ func (s *service) FinalizeOffchainTx(
  
  		// save the encoded taproot tree in the checkpoint tx output
  		// it will be used to compute the sweep leaf in the sweeper
@@ -127,7 +137,7 @@ index 959ab5ef..681f293e 100644
  
  		var b64checkpointTx string
  		b64checkpointTx, err = checkpointTx.B64Encode()
-@@ -1749,6 +1760,12 @@ func (s *service) RegisterIntent(
+@@ -1749,6 +1761,12 @@ func (s *service) RegisterIntent(
  			})
  		}
  
@@ -140,7 +150,7 @@ index 959ab5ef..681f293e 100644
  		// validation is required only in case the vtxo can be unrolled = requires a forfeit transaction
  		if vtxo.RequiresForfeit() {
  			vtxoTapKey, err := vtxo.TapKey()
-@@ -3370,6 +3387,15 @@ func (s *service) finalizeRound(roundId string, roundTiming roundTiming, setting
+@@ -3370,6 +3388,15 @@ func (s *service) finalizeRound(roundId string, roundTiming roundTiming, setting
  		}
  
  		for _, tx := range forfeitTxList {
@@ -156,7 +166,7 @@ index 959ab5ef..681f293e 100644
  			// nolint
  			ptx, _ := psbt.NewFromRawBytes(strings.NewReader(tx), true)
  			forfeitTxid := ptx.UnsignedTx.TxID()
-@@ -3730,7 +3756,8 @@ func checkpointOutputScripts(txs []domain.Tx) []string {
+@@ -3730,7 +3757,8 @@ func checkpointOutputScripts(txs []domain.Tx) []string {
  		if err != nil || len(ptx.UnsignedTx.TxOut) == 0 {
  			continue
  		}
@@ -166,7 +176,7 @@ index 959ab5ef..681f293e 100644
  	}
  	return scripts
  }
-@@ -3771,6 +3798,12 @@ func (s *service) restoreWatchingVtxos() error {
+@@ -3771,6 +3799,12 @@ func (s *service) restoreWatchingVtxos() error {
  		if err != nil || len(decoded) != 32 {
  			continue
  		}
@@ -179,7 +189,7 @@ index 959ab5ef..681f293e 100644
  		scripts = append(scripts, fmt.Sprintf("5120%s", key))
  	}
  
-@@ -4603,6 +4636,12 @@ func validateOffchainTxOutputs(
+@@ -4603,6 +4637,12 @@ func validateOffchainTxOutputs(
  
  		// handle non-extension OP_RETURN outputs
  		if len(out.PkScript) > 0 && out.PkScript[0] == txscript.OP_RETURN {
