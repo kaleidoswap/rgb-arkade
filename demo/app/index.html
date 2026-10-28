@@ -41,6 +41,12 @@ header { position: sticky; top: 0; z-index: 30; display: flex; align-items: cent
 .spin { width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; display: inline-block; flex: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* icons */
+svg.ic { display: inline-block; vertical-align: -0.2em; flex: none; }
+.legend-ic { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--fg2); white-space: nowrap; }
+a.chip { text-decoration: none; } a.chip:hover { color: var(--fg); border-color: var(--line2); }
+.xlink { color: var(--dim); font-size: 13px; text-decoration: none; margin-left: 6px; } .xlink:hover { color: var(--btc); }
+
 /* layer language: bitcoin / arkade / rgb */
 .lyr { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--fg2); white-space: nowrap; }
 .lyr::before { content: ''; width: 10px; height: 10px; border-radius: 50%; background: var(--c); }
@@ -103,7 +109,7 @@ input[type=number] { width: 96px; background: var(--card); border: 1px solid var
 .coin.swept .disc::before { display: none; }
 .coin:hover .disc { transform: translateY(-2px); }
 .coin.sel .disc { outline: 2px solid var(--fg); outline-offset: 12px; }
-.coin .tag { font-size: 12px; font-weight: 700; padding: 1px 8px; border-radius: 999px; background: var(--rgb); color: #0D1813; white-space: nowrap; }
+.coin .tag { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 700; padding: 1px 8px 1px 4px; border-radius: 999px; background: #0f2a1f; border: 1px solid rgba(21,233,154,.55); color: var(--rgb); white-space: nowrap; }
 .coin .tag.ghost { background: transparent; color: var(--dim); font-weight: 500; padding: 1px 0; }
 
 .panel { margin-top: 14px; padding: 12px; border-radius: 12px; background: var(--card2); border: 1px solid var(--line); }
@@ -168,6 +174,136 @@ a.ext { color: var(--dim); text-decoration: none; font-size: 12px; } a.ext:hover
 </style>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+<symbol id="ic-btc" viewBox="0 0 64 64"><g transform="translate(0.00630876,-0.00301984)">
+<path fill="#f7931a" d="m63.033,39.744c-4.274,17.143-21.637,27.576-38.782,23.301-17.138-4.274-27.571-21.638-23.295-38.78,4.272-17.145,21.635-27.579,38.775-23.305,17.144,4.274,27.576,21.64,23.302,38.784z"/>
+<path fill="#FFF" d="m46.103,27.444c0.637-4.258-2.605-6.547-7.038-8.074l1.438-5.768-3.511-0.875-1.4,5.616c-0.923-0.23-1.871-0.447-2.813-0.662l1.41-5.653-3.509-0.875-1.439,5.766c-0.764-0.174-1.514-0.346-2.242-0.527l0.004-0.018-4.842-1.209-0.934,3.75s2.605,0.597,2.55,0.634c1.422,0.355,1.679,1.296,1.636,2.042l-1.638,6.571c0.098,0.025,0.225,0.061,0.365,0.117-0.117-0.029-0.242-0.061-0.371-0.092l-2.296,9.205c-0.174,0.432-0.615,1.08-1.609,0.834,0.035,0.051-2.552-0.637-2.552-0.637l-1.743,4.019,4.569,1.139c0.85,0.213,1.683,0.436,2.503,0.646l-1.453,5.834,3.507,0.875,1.439-5.772c0.958,0.26,1.888,0.5,2.798,0.726l-1.434,5.745,3.511,0.875,1.453-5.823c5.987,1.133,10.489,0.676,12.384-4.739,1.527-4.36-0.076-6.875-3.226-8.515,2.294-0.529,4.022-2.038,4.483-5.155zm-8.022,11.249c-1.085,4.36-8.426,2.003-10.806,1.412l1.928-7.729c2.38,0.594,10.012,1.77,8.878,6.317zm1.086-11.312c-0.99,3.966-7.1,1.951-9.082,1.457l1.748-7.01c1.982,0.494,8.365,1.416,7.334,5.553z"/>
+</g></symbol>
+<symbol id="ic-ark" viewBox="0 0 1024 1024"><rect width="1024" height="1024" rx="200" fill="#351791" />
+  <rect x="512" y="256" width="128" height="128" fill="#F6F6F6" />
+  <rect x="384" y="256" width="128" height="128" fill="#F6F6F6" />
+  <rect x="640" y="384" width="128" height="128" fill="#F6F6F6" />
+  <rect width="128" height="128" transform="matrix(-1 0 0 1 384 384)" fill="#F6F6F6" />
+  <rect width="128" height="128" transform="matrix(-1 0 0 1 512 512)" fill="#F6F6F6" />
+  <rect width="128" height="128" transform="matrix(-1 0 0 1 640 512)" fill="#F6F6F6" />
+  <rect x="640" y="640" width="128" height="128" fill="#F6F6F6" />
+  <rect width="128" height="128" transform="matrix(-1 0 0 1 384 640)" fill="#F6F6F6" />
+  <path d="M640 256L768 384H640V256Z" fill="#F6F6F6" />
+  <path d="M384 256L256 384H384V256Z" fill="#F6F6F6" /></symbol>
+<symbol id="ic-rgb" viewBox="0 0 227 274"><g clip-path="url(#clip0)">
+<path d="M113.6 0L23.9 54.3L40.2 82.5H227V68.6L113.6 0Z" fill="url(#paint0_radial)"/>
+<path d="M106.1 215.8L15.4 58.7L0 68V205.2L82.3 255.1L106.1 215.8Z" fill="url(#paint1_radial)"/>
+<path d="M90.9 260L113.6 273.8L227 205.2V91.5H192.9L90.9 260Z" fill="url(#paint2_linear)"/>
+<path d="M222 203.2L223.1 97.2L113.5 269.7L222 203.2Z" fill="url(#paint3_linear)"/>
+<path d="M222.3 95.5C222.8 95.5 223.1 119.7 222.9 149.5C222.7 179.3 222.1 203.5 221.6 203.5C221.1 203.5 220.8 179.3 221 149.5C221.2 119.7 221.8 95.5 222.3 95.5Z" fill="url(#paint4_radial)"/>
+<path d="M225.528 200.898C225.795 201.32 205.504 214.511 180.213 230.273C154.922 246.034 134.149 258.464 133.882 258.042C133.614 257.619 153.906 244.429 179.197 228.667C204.488 212.905 225.261 200.475 225.528 200.898Z" fill="url(#paint5_radial)"/>
+<path d="M5.59998 200.2L83.2 243.9L6.99998 81.8L5.59998 200.2Z" fill="url(#paint6_linear)"/>
+<path d="M6.29999 95.5C6.79999 95.5 7.09999 119.7 6.89999 149.5C6.69999 179.3 6.09999 203.5 5.59999 203.5C5.09999 203.5 4.79999 179.3 4.99999 149.5C5.29999 119.6 5.79999 95.5 6.29999 95.5Z" fill="url(#paint7_radial)"/>
+<path d="M69.2574 239.651C68.9928 240.075 54.2901 231.256 36.4865 219.913C18.6829 208.569 4.45664 198.986 4.7213 198.562C4.98596 198.138 19.6887 206.957 37.4922 218.301C55.3029 229.766 69.5221 239.227 69.2574 239.651Z" fill="url(#paint8_radial)"/>
+<path d="M115 10.5L35.9 56L220.4 70.5L115 10.5Z" fill="url(#paint9_linear)"/>
+<path d="M108 5.5C108.4 4.9 133.3 18.9 163.7 36.8C194.1 54.7 218.4 69.8 218 70.4C217.6 71 192.7 57 162.3 39.1C131.9 21.2 107.6 6.1 108 5.5Z" fill="url(#paint10_radial)"/>
+<path d="M98.4 20C98.4 20.2 85.1 28.4 74.9 34.2C64.7 40 56 44.6 56 44.5C56 44.3 64.7 39.5 74.9 33.6C85.1 27.7 98.4 19.8 98.4 20Z" fill="white"/>
+</g>
+<defs>
+<radialGradient id="paint0_radial" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(125.465 41.23) scale(78.7467)">
+<stop offset="0.13" stop-color="#FFEF00"/>
+<stop offset="0.19" stop-color="#FFE403"/>
+<stop offset="0.3" stop-color="#FFC60A"/>
+<stop offset="0.45" stop-color="#FF9615"/>
+<stop offset="0.63" stop-color="#FF5425"/>
+<stop offset="0.8" stop-color="#FF0F36"/>
+</radialGradient>
+<radialGradient id="paint1_radial" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(53.055 156.88) scale(78.9305)">
+<stop offset="0.19" stop-color="#1BEB39"/>
+<stop offset="0.45" stop-color="#24DF2E"/>
+<stop offset="0.91" stop-color="#3DC00F"/>
+<stop offset="1" stop-color="#42B909"/>
+</radialGradient>
+<linearGradient id="paint2_linear" x1="90.89" y1="182.625" x2="227" y2="182.625" gradientUnits="userSpaceOnUse">
+<stop stop-color="#16E4DD"/>
+<stop offset="0.5" stop-color="#0B34D9" stop-opacity="0.8"/>
+</linearGradient>
+<linearGradient id="paint3_linear" x1="264" y1="97" x2="123.787" y2="188.21" gradientUnits="userSpaceOnUse">
+<stop stop-color="white"/>
+<stop offset="0.08" stop-color="white" stop-opacity="0.8"/>
+<stop offset="0.17" stop-color="white" stop-opacity="0.62"/>
+<stop offset="0.26" stop-color="white" stop-opacity="0.45"/>
+<stop offset="0.36" stop-color="white" stop-opacity="0.31"/>
+<stop offset="0.46" stop-color="white" stop-opacity="0.2"/>
+<stop offset="0.57" stop-color="white" stop-opacity="0.11"/>
+<stop offset="0.68" stop-color="white" stop-opacity="0.05"/>
+<stop offset="0.82" stop-color="white" stop-opacity="0.01"/>
+<stop offset="1" stop-color="white" stop-opacity="0"/>
+</linearGradient>
+<radialGradient id="paint4_radial" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(222.003 148.659) rotate(-89.6347) scale(54.4816 0.930495)">
+<stop offset="0.2" stop-color="white"/>
+<stop offset="0.59" stop-color="white" stop-opacity="0.04"/>
+<stop offset="1" stop-color="white" stop-opacity="0"/>
+</radialGradient>
+<radialGradient id="paint5_radial" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(180.444 229.065) rotate(-31.9506) scale(54.4816 0.930495)">
+<stop offset="0.2" stop-color="white"/>
+<stop offset="0.59" stop-color="white" stop-opacity="0.04"/>
+<stop offset="1" stop-color="white" stop-opacity="0"/>
+</radialGradient>
+<linearGradient id="paint6_linear" x1="59.5835" y1="259.953" x2="42.5049" y2="92.5821" gradientUnits="userSpaceOnUse">
+<stop stop-color="white" stop-opacity="0"/>
+<stop offset="0.18" stop-color="white" stop-opacity="0.01"/>
+<stop offset="0.32" stop-color="white" stop-opacity="0.05"/>
+<stop offset="0.43" stop-color="white" stop-opacity="0.11"/>
+<stop offset="0.54" stop-color="white" stop-opacity="0.2"/>
+<stop offset="0.64" stop-color="white" stop-opacity="0.31"/>
+<stop offset="0.74" stop-color="white" stop-opacity="0.45"/>
+<stop offset="0.83" stop-color="white" stop-opacity="0.62"/>
+<stop offset="0.92" stop-color="white" stop-opacity="0.8"/>
+<stop offset="1" stop-color="white"/>
+</linearGradient>
+<radialGradient id="paint7_radial" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(6.00303 148.659) rotate(-89.6347) scale(54.4816 0.930497)">
+<stop offset="0.2" stop-color="white"/>
+<stop offset="0.59" stop-color="white" stop-opacity="0.04"/>
+<stop offset="1" stop-color="white" stop-opacity="0"/>
+</radialGradient>
+<radialGradient id="paint8_radial" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(37.4669 219.467) rotate(32.4755) scale(38.5934 0.930479)">
+<stop offset="0.2" stop-color="white"/>
+<stop offset="0.59" stop-color="white" stop-opacity="0.04"/>
+<stop offset="1" stop-color="white" stop-opacity="0"/>
+</radialGradient>
+<linearGradient id="paint9_linear" x1="53" y1="30.5" x2="197.14" y2="97.2888" gradientUnits="userSpaceOnUse">
+<stop stop-color="white"/>
+<stop offset="0.08" stop-color="white" stop-opacity="0.8"/>
+<stop offset="0.17" stop-color="white" stop-opacity="0.62"/>
+<stop offset="0.26" stop-color="white" stop-opacity="0.45"/>
+<stop offset="0.36" stop-color="white" stop-opacity="0.31"/>
+<stop offset="0.46" stop-color="white" stop-opacity="0.2"/>
+<stop offset="0.57" stop-color="white" stop-opacity="0.11"/>
+<stop offset="0.68" stop-color="white" stop-opacity="0.05"/>
+<stop offset="0.82" stop-color="white" stop-opacity="0.01"/>
+<stop offset="1" stop-color="white" stop-opacity="0"/>
+</linearGradient>
+<radialGradient id="paint10_radial" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(162.445 38.7078) rotate(-149.437) scale(64.4362 1.34306)">
+<stop offset="0.2" stop-color="white"/>
+<stop offset="0.59" stop-color="white" stop-opacity="0.04"/>
+<stop offset="1" stop-color="white" stop-opacity="0"/>
+</radialGradient>
+<clipPath id="clip0">
+<rect width="227" height="273.8" fill="white"/>
+</clipPath>
+</defs></symbol>
+<symbol id="ic-rgbark" viewBox="0 0 24 24"><circle cx="12" cy="12" r="12" fill="#1C1C1E"/>
+  <g fill="#FF4D4D">
+    <path d="M9 6L6 9h3z"/>
+    <rect x="6" y="9" width="3" height="3"/>
+    <rect x="6" y="15" width="3" height="3"/>
+  </g>
+  <g fill="#3DDC84">
+    <rect x="9" y="6" width="6" height="3"/>
+    <rect x="9" y="12" width="6" height="3"/>
+  </g>
+  <g fill="#4D7CFF">
+    <path d="M15 6l3 3h-3z"/>
+    <rect x="15" y="9" width="3" height="3"/>
+    <rect x="15" y="15" width="3" height="3"/>
+  </g></symbol>
+</svg>
 <header>
   <div class="brand">
     <svg width="30" height="30" viewBox="0 0 210 210" aria-label="KaleidoSwap"><path d="M69.7141 207.3H0.908203L35.3243 172.936L69.7141 207.3Z" fill="#6F32FF"/><path d="M138.441 0.96106V69.767L104.078 35.3508L138.441 0.96106Z" fill="#17B581"/><path d="M138.415 138.547V207.352L104.051 172.936L138.415 138.547Z" fill="#17B581"/><path d="M138.441 69.7406V0.96106L172.804 35.3772L138.441 69.767V69.7406Z" fill="#17B581"/><path d="M69.6614 138.494V69.6879L104.025 104.104L69.6614 138.494Z" fill="#15E99A"/><path d="M69.6615 69.7142V138.52L35.2981 104.104L69.6615 69.7142Z" fill="#15E99A"/><path d="M138.467 207.379V138.573L172.831 172.989L138.467 207.379Z" fill="#17B581"/><path d="M0.908203 0.908325H69.7141L35.298 35.2718L0.908203 0.908325Z" fill="#6F32FF"/><path d="M207.22 207.3H138.415L172.831 172.936L207.22 207.3Z" fill="#17B581"/><path d="M138.415 0.987427H207.22L172.804 35.3509L138.415 0.987427Z" fill="#17B581"/><path d="M138.467 69.7143H69.6614L104.078 35.3508L138.467 69.7143Z" fill="#17B581"/><path d="M69.635 138.494H138.441L104.025 172.857L69.635 138.494Z" fill="#17B581"/><path d="M138.415 138.494H69.635L104.025 104.157L138.388 138.494H138.415Z" fill="#15E99A"/><path d="M138.415 69.7142L104.051 104.051L69.6614 69.7142H138.441H138.415Z" fill="#15E99A"/></svg>
@@ -182,6 +318,7 @@ a.ext { color: var(--dim); text-decoration: none; font-size: 12px; } a.ext:hover
   </nav>
   <div class="spacer"></div>
   <span class="chip" id="busy"><span class="dot"></span>idle</span>
+  <a class="chip" id="explorerLink" href="#" target="_blank" rel="noopener" title="The regtest bitcoin explorer: blocks and on-chain transactions"><svg class="ic" width="14" height="14"><use href="#ic-btc"/></svg>Explorer ↗</a>
   <span class="chip" id="height">block …</span>
   <span class="chip" id="arkd" title="The Ark operator, patched for RGB. It coordinates batches and co-signs; it never holds your assets.">arkd …</span>
 </header>
@@ -189,7 +326,7 @@ a.ext { color: var(--dim); text-decoration: none; font-size: 12px; } a.ext:hover
 <section id="play" class="wrap">
   <div class="toolbar">
     <button class="btn cta" id="demoBtn" onclick="runDemo()">▶ Run the guided demo</button>
-    <div class="layers"><span class="lyr btc">Bitcoin</span><span class="lyr ark">Arkade</span><span class="lyr rgb">RGB asset</span></div>
+    <div class="layers"><span class="legend-ic"><svg class="ic" width="16" height="16"><use href="#ic-btc"/></svg>Bitcoin</span><span class="legend-ic"><svg class="ic" width="16" height="16"><use href="#ic-ark"/></svg>Arkade</span><span class="legend-ic"><svg class="ic" width="14" height="17"><use href="#ic-rgb"/></svg>RGB asset</span><span class="legend-ic"><svg class="ic" width="16" height="16"><use href="#ic-rgbark"/></svg>RGB on Arkade</span></div>
     <div class="spacer"></div>
     <div class="regtest">
       <button class="btn sm" onclick="act({action:'mine', blocks:+v('mineN')})" title="Regtest: fast-forward the bitcoin chain">Mine</button><span class="local"><input id="mineN" type="number" value="1" min="1" max="500" aria-label="blocks to mine"> blocks</span>
@@ -232,7 +369,10 @@ const ksat = n => n >= 1e6 ? (n/1e6).toFixed(n % 1e6 ? 2 : 0) + 'M' : n >= 1000 
 const EXPLORER_LOCAL = location.protocol + '//' + location.hostname + ':3000/tx/';
 const explorer = () => (st && st.explorer) || EXPLORER_LOCAL;
 const txOf = h => (String(h).match(/^[0-9a-f]{64}/) || [])[0];
-const hash = h => `<span class="hash" title="${esc(h)} · click to copy" onclick="copy('${esc(h)}')">${esc(short(h, 6, 4))}</span> ${txOf(h) ? ` <a class="ext" href="${explorer()}${txOf(h)}" target="_blank" rel="noopener" title="Open in the regtest explorer">↗</a>` : ''}`;
+const hash = h => `<span class="hash" title="${esc(h)} · click to copy" onclick="copy('${esc(h)}')">${esc(short(h, 6, 4))}</span>`;
+const ic = (n, sz = 14) => `<svg class="ic" width="${n === 'rgb' ? Math.round(sz * .83) : sz}" height="${sz}" aria-hidden="true"><use href="#ic-${n}"/></svg>`;
+const explorerRoot = () => explorer().replace(/tx\/$/, '');
+const xlink = h => txOf(h) ? `<a class="ext" href="${explorer()}${txOf(h)}" target="_blank" rel="noopener" title="Open in the bitcoin explorer">↗</a>` : '';
 const exitDelay = () => (st && st.arkd && st.arkd.exit_delay) || 'the exit delay';
 
 function tab(t) {
@@ -311,7 +451,7 @@ const TXK = [
   [/checkpoint/i, 'ark', 'Checkpoint', true], [/Arkade tx/i, 'ark', 'Arkade tx', true], [/forfeit/i, 'ark', 'Forfeit', true],
   [/commitment/i, 'btc', 'Commitment', false], [/exit branch/i, 'btc', 'Branch', false], [/on-chain RGB transfer/i, 'btc', 'RGB transfer', true], [/sweep tx/i, 'btc', 'Sweep', false],
 ];
-const node = (lay, label, h, rgb) => `<span class="node ${lay}" ${h ? `title="${esc(h)}"` : ''}><span class="nl">${rgb ? '<i class="rg" title="carries the RGB commitment"></i>' : ''}${esc(label)}</span>${h ? `<span>${hash(h)}</span>` : ''}</span>`;
+const node = (lay, label, h, rgb) => `<span class="node ${lay}" ${h ? `title="${esc(h)}"` : ''}><span class="nl">${ic(lay, 13)}${esc(label)}${rgb ? `<span title="carries the RGB commitment">${ic('rgb', 13)}</span>` : ''}</span>${h ? `<span>${hash(h)}${lay === 'btc' ? ' ' + xlink(h) : ''}</span>` : ''}</span>`;
 function flowHtml(g) {
   const a = g.action, f = cap(who(a)), t = cap(to(a));
   const info = k => { const l = g.lines.find(x => x.startsWith(k + ' = ')); return l ? l.slice(k.length + 3) : null; };
@@ -373,7 +513,7 @@ function coinHtml(w, c, maxSat, maxExp) {
   const tip = [c.lane === 'ark' ? 'VTXO in Arkade' : c.kind === 'unrolled' ? 'VTXO published on bitcoin (unilateral exit)' : c.kind === 'exit-output' ? 'Bitcoin output from a collaborative exit' : c.kind === 'exited' ? 'Bitcoin-only output from an exit' : 'Bitcoin output',
     c.sat ? fmt(c.sat) + ' sat' : '', c.h ? `${fmt(c.h.amount)} ${tickerOf(c.h.asset_id)} on it` : 'no asset',
     c.swept ? 'swept: recover it' : c.exp != null ? (c.exp < 0 ? 'expired' : 'expires in ' + dur(c.exp)) : c.conf != null ? c.conf + ' confirmations' : '', c.op].filter(Boolean).join(' · ');
-  return `<button class="${cls}" style="--d:${d}px;--life:${life}" title="${esc(tip)}" onclick="pick('${w.name}','${esc(c.op)}')"><span class="disc">${esc(amount)}</span>${c.h ? `<span class="tag">${fmt(c.h.amount)} ${esc(tickerOf(c.h.asset_id))}</span>` : `<span class="tag ghost">${c.swept ? 'swept' : c.expired ? 'expired' : 'bitcoin'}</span>`}</button>`;
+  return `<button class="${cls}" style="--d:${d}px;--life:${life}" title="${esc(tip)}" onclick="pick('${w.name}','${esc(c.op)}')"><span class="disc">${esc(amount)}</span>${c.h ? `<span class="tag">${ic(c.lane === 'ark' ? 'rgbark' : 'rgb', 13)} ${fmt(c.h.amount)} ${esc(tickerOf(c.h.asset_id))}</span>` : `<span class="tag ghost">${c.swept ? 'swept' : c.expired ? 'expired' : 'bitcoin'}</span>`}</button>`;
 }
 function pick(name, op) { sel[name] = sel[name] === op ? null : op; render(); }
 const dis = () => busy || demo ? 'disabled' : '';
@@ -397,7 +537,8 @@ function actionsHtml(w, i, c) {
   else if (c.lane === 'btc' && !H) rows = `<div class="row"><button class="btn" ${dis()} onclick="act({action:'sweep_btc', who:'${w.name}'})">${ly('b')}Claim to wallet</button></div>`;
   else rows = `<div class="row"><span class="why">Bitcoin-only VTXO: issue an asset onto it.</span></div>`;
   const what = H ? `<b>${fmt(H.amount)} ${esc(tickerOf(H.asset_id))}</b> on ${c.lane === 'ark' ? 'a VTXO' : 'bitcoin'}${c.sat ? ` · ${fmt(c.sat)} sat` : ''}` : `<b>${c.sat ? fmt(c.sat) + ' sat' : 'Bitcoin'}</b>`;
-  return `<div class="panel"><h4>${what}</h4>${rows}<div class="row" style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">${base}</div></div>`;
+  const onchain = c.lane === 'btc' && txOf(c.op) ? `<a class="xlink" href="${explorer()}${txOf(c.op)}" target="_blank" rel="noopener">View on explorer ↗</a>` : '';
+  return `<div class="panel"><h4>${what}${onchain}</h4>${rows}<div class="row" style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">${base}</div></div>`;
 }
 function walletHtml(w, i) {
   const b = w.btc || {}, off = (b.offchain_confirmed || 0) + (b.offchain_preconfirmed || 0);
@@ -410,13 +551,13 @@ function walletHtml(w, i) {
     const k = a.ark || {active: 0, to_recover: 0, unrolled: 0, in_flight: 0};
     const onc = (w.holdings || []).filter(h => h.asset_id === a.asset_id && h.kind !== 'vtxo').reduce((n, h) => n + h.amount, 0);
     const parts = [k.to_recover ? fmt(k.to_recover) + ' to recover' : '', onc ? fmt(onc) + ' on bitcoin' : '', k.in_flight ? fmt(k.in_flight) + ' moving' : ''].filter(Boolean);
-    return `<div class="total asset"><b>${fmt(k.active)}</b><span>${esc(tickerOf(a.asset_id))} in Arkade</span>${parts.length ? `<small>${parts.join(', ')}</small>` : ''}</div>`;
+    return `<div class="total asset">${ic('rgbark', 18)} <b>${fmt(k.active)}</b><span>${esc(tickerOf(a.asset_id))} in Arkade</span>${parts.length ? `<small>${parts.join(', ')}</small>` : ''}</div>`;
   }).join('');
   const c = all.find(x => x.op === sel[w.name]);
   return `<div class="whead"><div class="avatar av-${esc(w.name)}">${esc(w.name[0].toUpperCase())}</div><div style="min-width:0"><h2>${esc(w.name)}</h2><div class="mono addr" title="Ark address · click to copy" onclick="copy('${esc(w.ark_address)}')">${esc(short(w.ark_address, 12, 6))}</div></div></div>
-    <div class="totals"><div class="total"><b>${fmt(off)}</b><span>sat in Arkade</span></div>${assets}</div>
-    <div class="lane ark"><div class="lane-h"><span class="lyr ark">Arkade</span><span class="hint">VTXOs · ring = time left</span></div><div class="coins">${ark.map(x => coinHtml(w, x, maxSat, maxExp)).join('') || '<span class="empty">No VTXOs yet</span>'}</div></div>
-    <div class="lane btc"><div class="lane-h"><span class="lyr btc">Bitcoin</span><span class="hint">on-chain outputs</span></div><div class="coins">${btc.map(x => coinHtml(w, x, maxSat, maxExp)).join('') || '<span class="empty">Nothing on-chain yet</span>'}</div></div>
+    <div class="totals"><div class="total">${ic('ark', 18)} <b>${fmt(off)}</b><span>sat in Arkade</span></div>${assets}</div>
+    <div class="lane ark"><div class="lane-h">${ic('ark', 16)}<b>Arkade</b><span class="hint">VTXOs · ring = time left</span></div><div class="coins">${ark.map(x => coinHtml(w, x, maxSat, maxExp)).join('') || '<span class="empty">No VTXOs yet</span>'}</div></div>
+    <div class="lane btc"><div class="lane-h">${ic('btc', 16)}<b>Bitcoin</b><span class="hint">on-chain outputs</span></div><div class="coins">${btc.map(x => coinHtml(w, x, maxSat, maxExp)).join('') || '<span class="empty">Nothing on-chain yet</span>'}</div></div>
     ${actionsHtml(w, i, c)}`;
 }
 
@@ -431,6 +572,7 @@ function render() {
   document.getElementById('height').textContent = 'block ' + fmt(st.height) + (st.automine ? ' · auto' : '');
   document.getElementById('amBtn').textContent = st.automine ? 'Stop auto-mine' : 'Auto-mine';
   document.getElementById('demoBtn').disabled = !!(busy || demo);
+  document.getElementById('explorerLink').href = explorerRoot();
   document.querySelectorAll('.local').forEach(e => e.hidden = !!st.public);
   if (st.public) { document.getElementById('resetB').textContent = 'New wallets'; document.getElementById('mineN').value = 1; }
   const blocks = /blocks/.test(exitDelay()), er = document.getElementById('expRow');
@@ -524,7 +666,7 @@ async function runDemo() {
 }
 
 // ---------------------------------------------------------------- learn: three lanes, built step by step
-const LANES = {btc: {y: 70, label: 'Bitcoin', c: '#F7931A', sub: 'on-chain'}, ark: {y: 190, label: 'Arkade', c: '#6F32FF', sub: 'off-chain, instant'}, rgb: {y: 310, label: 'RGB', c: '#15E99A', sub: 'client-side'}};
+const LANES = {btc: {y: 70, label: 'Bitcoin', c: '#F7931A', sub: 'on-chain', ic: 'btc'}, ark: {y: 190, label: 'Arkade', c: '#6F32FF', sub: 'off-chain, instant', ic: 'ark'}, rgb: {y: 310, label: 'RGB', c: '#15E99A', sub: 'client-side', ic: 'rgb'}};
 const STORIES = [
   { t: 'Bring an asset in', d: 'Board, issue, jump in', steps: [
     { h: 'Get a VTXO', p: 'Alice deposits bitcoin and receives a VTXO: an output that lives off-chain inside an Ark batch, backed by transactions she can always publish.',
@@ -574,7 +716,7 @@ function drawStory() {
   const pos = {}, shapes = [];
   S.steps.forEach((stp, si) => stp.el.forEach(e => { if (e.id) pos[e.id] = {x: e.x, y: LANES[e.lane].y + (e.dy || 0), e, si}; }));
   let svg = '<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#9A9A94"/></marker></defs>';
-  for (const [k, L] of Object.entries(LANES)) svg += `<rect x="0" y="${L.y - 52}" width="1000" height="104" rx="14" fill="${L.c}" fill-opacity="${k === 'rgb' ? .05 : .07}" stroke="${L.c}" stroke-opacity=".25"/><text x="16" y="${L.y - 30}" fill="${L.c}" font-size="15" font-weight="700" font-family="Satoshi, system-ui">${L.label}</text><text x="16" y="${L.y - 13}" fill="#9A9A94" font-size="12" font-family="Satoshi, system-ui">${L.sub}</text>`;
+  for (const [k, L] of Object.entries(LANES)) svg += `<rect x="0" y="${L.y - 52}" width="1000" height="104" rx="14" fill="${L.c}" fill-opacity="${k === 'rgb' ? .05 : .07}" stroke="${L.c}" stroke-opacity=".25"/><use href="#ic-${L.ic}" x="16" y="${L.y - 45}" width="18" height="18"/><text x="40" y="${L.y - 30}" fill="${L.c}" font-size="15" font-weight="700" font-family="Satoshi, system-ui">${L.label}</text><text x="40" y="${L.y - 13}" fill="#9A9A94" font-size="12" font-family="Satoshi, system-ui">${L.sub}</text>`;
   const cls = si => 'el ' + (si > stepI ? 'hid' : si < stepI ? 'old' : '');
   S.steps.forEach((stp, si) => stp.el.filter(e => e.e).forEach(e => {
     const [a, b, dashed] = e.e, A = pos[a], B = pos[b]; if (!A || !B) return;
