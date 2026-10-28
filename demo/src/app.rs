@@ -596,7 +596,7 @@ async fn run_action(c: &mut Core, a: &Action, lg: &Logger) -> anyhow::Result<()>
         Action::OnchainSend { from, to, asset_id, outpoint } => {
             let (fi, ti) = (idx(&from)?, idx(&to)?);
             let (f, t) = two_mut(&mut c.wallets, fi, ti)?;
-            let h = take_holding(f, &asset_id, &["unrolled", "exit-output"], &outpoint)?;
+            let h = take_holding(f, &asset_id, &["unrolled", "exit-output", "onchain"], &outpoint)?;
             let o = OutPoint::from_str(&h.outpoint)?;
             let cid = ContractId::from_str(&asset_id).map_err(|e| anyhow!("{e}"))?;
             let recv = bl(|| t.rgb.witness_receive(None, Assignment::Fungible(h.amount), now() + 86_400, vec![], 1))?;
@@ -626,7 +626,8 @@ async fn run_action(c: &mut Core, a: &Action, lg: &Logger) -> anyhow::Result<()>
             ws.push(txid);
             build_proof(&f.ark, &regtest, &ws, &carried, &proof_path(&cons)).await?;
             let settled = receive_onchain(&to, t, &cons, &ops, &asset_id, h.amount, lg).await?;
-            t.holdings.push(Holding { asset_id, amount: h.amount, kind: "onchain".into(), outpoint: format!("{txid}:1"), proof: None });
+            // the Ark proof travels with the asset: its history may hold never-mined forfeits
+            t.holdings.push(Holding { asset_id, amount: h.amount, kind: "onchain".into(), outpoint: format!("{txid}:1"), proof: Some(proof_path(&cons).display().to_string()) });
             lg.push("ok", format!("{to} settled {settled} on-chain"));
         }
         Action::Mine { blocks } => {
@@ -866,7 +867,7 @@ async fn get_state(State(app): State<AppState>, headers: HeaderMap) -> impl Into
                 // the server's directories are nobody else's business
                 let dirs = [view.state_dir.clone(), crate::paths::root().display().to_string()];
                 for e in &mut view.log {
-                    for d in &dirs {
+                    for d in dirs.iter().filter(|d| !d.is_empty()) {
                         e.msg = e.msg.replace(&format!("{d}/"), "").replace(d.as_str(), "your wallet folder");
                     }
                 }
@@ -901,8 +902,10 @@ async fn post_action(State(app): State<AppState>, headers: HeaderMap, Json(a): J
         s.busy = Some(label.clone());
     }
     if sess.jobs.lock().unwrap().send(a).is_err() {
-        sess.shared.lock().unwrap().busy = None;
-        return err(StatusCode::INTERNAL_SERVER_ERROR, "worker stopped".into());
+        // the worker is gone (its wallets could not be created): forget the session so the next
+        // action starts a new one instead of hitting the dead one until the cookie expires
+        app.sessions.lock().unwrap().retain(|_, s| !Arc::ptr_eq(s, &sess));
+        return err(StatusCode::SERVICE_UNAVAILABLE, "your wallets could not be created: try again in a few seconds".into());
     }
     (StatusCode::ACCEPTED, HeaderMap::new(), Json(serde_json::json!({"ok": true, "started": label})))
 }
@@ -1064,6 +1067,8 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
     let explorer = std::env::var("RGB_ARKADE_EXPLORER").unwrap_or_default();
     let sessions: Arc<StdMutex<HashMap<String, Arc<Session>>>> = Arc::default();
     if public {
+        // sessions do not survive a restart (they live in memory), so neither do their wallets
+        let _ = std::fs::remove_dir_all(data_dir().join("sessions"));
         let clock = Arc::new(StdMutex::new(Shared { automine: env_u64("RGB_ARKADE_AUTOMINE", 60), ..Default::default() }));
         std::thread::spawn(move || miner(clock));
         let ss = sessions.clone();
