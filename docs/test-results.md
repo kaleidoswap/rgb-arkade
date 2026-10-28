@@ -191,3 +191,7 @@ Not rerun after the rename: `basic`, `basic-onchain-genesis`, `refresh`, `multi-
 ### Spending an asset received on-chain (28 Oct 2026, CET)
 
 An output that delivers an RGB asset on-chain carries only the payment's sats (2 000), so spending it again panicked on the change; the spend now adds a vanilla UTXO for the fee. `collab-exit` gained a hop: Dave spends what he received to Erin, a wallet that never saw the history (whose collaborative-exit forfeit is never mined). PASS online (Dave → Erin `810c42b5…`, Erin `settled: 1000`) and with `--offline-proof` (`eba63ad4…`; Erin registers the forfeit from the proof Dave forwards, then `settled: 1000`). In the app, a 700-unit holding received on-chain went Bob → Alice → Bob on-chain (`628772eb…`, `9be67bc6…`).
+
+### Stock balance after Arkade spends (28 Oct 2026, CET)
+
+rgb-lib marks a wallet UTXO spent only when it broadcasts the spending tx, so after a jump-in or a spend built outside it the stock balance kept the moved allocations (Alice showed `spendable: 1000` of an asset she had sent away). The custom coloring paths now mark their wallet inputs spent and `ark_rollback_transfer` unmarks them. `collab-exit` (online and `--offline-proof`) checks it: Alice and Dave end at `settled: 0, spendable: 0`, Erin at 1000. Quick suite on the fast profile, run alone: 11/11 PASS (15:33–15:48), failed-batch rollback included.
