@@ -187,3 +187,7 @@ Not rerun after the rename: `basic`, `basic-onchain-genesis`, `refresh`, `multi-
 ### Fast regtest profile (28 Oct 2026, CET, macOS host)
 
 `make regtest-up-fast` (every arkd delay in blocks: exits 10, boarding 20, expiry 500), then `scripts/run-all.sh quick`: basic, basic-onchain-genesis, offchain-transfer, offchain-transfer `--offline-proof`, refresh, collab-exit, forfeit-negatives, multi-user, failed-batch, fraud and multihop-exit PASS in about 16 min (12:44–13:00, fraud rerun after rebuilding `tools/arkdb` for linux), against about 1 h 30 on the seconds profile. Unilateral exits mature in about 100 s instead of 9 min: `basic` 1 min 32 s (9 min 23 s), `multihop-exit` 1 min 49 s (about 10 min).
+
+### Spending an asset received on-chain (28 Oct 2026, CET)
+
+An output that delivers an RGB asset on-chain carries only the payment's sats (2 000), so spending it again panicked on the change; the spend now adds a vanilla UTXO for the fee. `collab-exit` gained a hop: Dave spends what he received to Erin, a wallet that never saw the history (whose collaborative-exit forfeit is never mined). PASS online (Dave → Erin `810c42b5…`, Erin `settled: 1000`) and with `--offline-proof` (`eba63ad4…`; Erin registers the forfeit from the proof Dave forwards, then `settled: 1000`). In the app, a 700-unit holding received on-chain went Bob → Alice → Bob on-chain (`628772eb…`, `9be67bc6…`).

@@ -108,7 +108,7 @@ Limits: one action runs at a time; regtest only; an action interrupted by a rest
 | `basic-onchain-genesis` | jump-in | Same, with on-chain issuance and a jump-in tx | ~15 min |
 | `offchain-transfer` | multi-hop off-chain transfer | 2 hops with asset change, unilateral exit, on-chain send; Dave `settled: 700` | ~10 min |
 | `refresh` | forfeit commitment | Refresh a colored VTXO, then hop, exit, on-chain send; Carol `settled: 1000` | ~10 min |
-| `collab-exit` | forfeit commitment | Collaborative exit to an on-chain address, then on-chain send; Dave `settled: 1000` | ~3 min |
+| `collab-exit` | forfeit commitment | Collaborative exit to an on-chain address, on-chain send to Dave, then Dave spends it on to Erin (fresh wallet); Erin `settled: 1000` | ~3 min |
 | `forfeit-negatives` | forfeit commitment | Malformed checkpoint/forfeit commitments are rejected by arkd; unattested forfeits are rejected by receivers | ~3 min |
 | any of the above + `--offline-proof` | offline proof | Receivers validate with arkd paused, from consignment + Ark proof + chain; 9 kinds of tampered proofs are rejected (`offchain-transfer` also: a key-path-only witness with no operator signature) | same |
 | `multi-user` | batches | One batch with 4 users, 2 assets and a BTC-only VTXO, after an off-chain send with BTC + asset change; Ark balances are checked | ~5 min |
