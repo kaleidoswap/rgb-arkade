@@ -12,7 +12,7 @@ use ark_bdk_wallet::Wallet as ArkBdkWallet;
 use ark_client::GetVtxosRequestFilter;
 use ark_core::send::SendReceiver;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{Html, IntoResponse, Json};
 use axum::routing::{get, post};
 use bitcoin::{Address, Amount, Network, OutPoint, Txid};
@@ -23,6 +23,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::Ordering;
+use std::collections::HashMap;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex as StdMutex};
 
 const INDEX: &str = include_str!("../app/index.html");
@@ -80,6 +82,10 @@ struct Shared {
     height: u64,
     /// background miner interval in seconds (0 = off)
     automine: u64,
+    /// public mode: one wallet pair per visitor, no global regtest controls
+    public: bool,
+    /// tx URL prefix of the block explorer ("" = the local mempool on :3000)
+    explorer: String,
 }
 
 struct Core {
@@ -90,10 +96,27 @@ struct Core {
     seq: u64,
 }
 
+/// One visitor's wallet pair, served by its own worker thread.
+struct Session {
+    jobs: StdMutex<std::sync::mpsc::Sender<Action>>,
+    shared: Arc<StdMutex<Shared>>,
+    last_seen: AtomicU64,
+}
+
 #[derive(Clone)]
 struct AppState {
-    jobs: Arc<StdMutex<std::sync::mpsc::Sender<Action>>>,
-    shared: Arc<StdMutex<Shared>>,
+    sessions: Arc<StdMutex<HashMap<String, Arc<Session>>>>,
+    public: bool,
+    explorer: String,
+}
+
+/// Only one action runs at a time across all sessions: actions pause arkd and the electrum
+/// indexer does not cope with concurrent scenario traffic.
+static ACTION_LOCK: StdMutex<()> = StdMutex::new(());
+const COOKIE: &str = "rgbarkade";
+const LOCAL: &str = "local";
+fn env_u64(k: &str, d: u64) -> u64 {
+    std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
 }
 
 #[derive(Deserialize)]
@@ -103,7 +126,13 @@ struct AutoMine {
 
 /// Regtest time control that runs beside the action queue: mine one block every `seconds`.
 async fn post_automine(State(app): State<AppState>, Json(m): Json<AutoMine>) -> impl IntoResponse {
-    let mut s = app.shared.lock().unwrap();
+    if app.public {
+        return Json(serde_json::json!({"ok": false, "error": "not available on the public demo"}));
+    }
+    let Some(sess) = app.sessions.lock().unwrap().get(LOCAL).cloned() else {
+        return Json(serde_json::json!({"ok": false}));
+    };
+    let mut s = sess.shared.lock().unwrap();
     s.automine = m.seconds;
     let msg = if m.seconds == 0 { "auto-mine off".to_string() } else { format!("auto-mine: one block every {} s", m.seconds) };
     println!("[app] [automine] info: {msg}");
@@ -744,21 +773,65 @@ async fn index() -> Html<&'static str> {
     Html(INDEX)
 }
 
-async fn get_state(State(app): State<AppState>) -> Json<Shared> {
-    Json(app.shared.lock().unwrap().clone())
+/// The caller's session: the single local one, or (public mode) the one named by the cookie,
+/// created on first use. The second value is a Set-Cookie header for a new session.
+fn session(app: &AppState, headers: &HeaderMap) -> Result<(Arc<Session>, Option<String>), (StatusCode, String)> {
+    let mut map = app.sessions.lock().unwrap();
+    if !app.public {
+        return map.get(LOCAL).cloned().map(|s| (s, None)).ok_or((StatusCode::SERVICE_UNAVAILABLE, "starting".into()));
+    }
+    let sid = headers
+        .get(header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|c| c.split(';').find_map(|kv| kv.trim().strip_prefix(&format!("{COOKIE}="))))
+        .filter(|s| s.len() == 32 && s.chars().all(|c| c.is_ascii_hexdigit()))
+        .map(str::to_string);
+    if let Some(s) = sid.as_ref().and_then(|id| map.get(id)) {
+        s.last_seen.store(now(), Ordering::Relaxed);
+        return Ok((s.clone(), None));
+    }
+    if map.len() >= env_u64("RGB_ARKADE_MAX_SESSIONS", 40) as usize {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "the demo is full right now, try again in a while".into()));
+    }
+    let id = sid.unwrap_or_else(|| rand::random::<[u8; 16]>().iter().map(|b| format!("{b:02x}")).collect());
+    let s = spawn_session(data_dir().join("sessions").join(&id), true, app.public, app.explorer.clone());
+    map.insert(id.clone(), s.clone());
+    Ok((s, Some(format!("{COOKIE}={id}; Path=/; Max-Age=604800; HttpOnly; SameSite=Lax"))))
 }
 
-async fn post_action(State(app): State<AppState>, Json(a): Json<Action>) -> impl IntoResponse {
+fn with_cookie(cookie: Option<String>) -> HeaderMap {
+    let mut h = HeaderMap::new();
+    if let Some(c) = cookie.and_then(|c| c.parse().ok()) {
+        h.insert(header::SET_COOKIE, c);
+    }
+    h
+}
+
+async fn get_state(State(app): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    match session(&app, &headers) {
+        Ok((s, cookie)) => (StatusCode::OK, with_cookie(cookie), Json(serde_json::to_value(s.shared.lock().unwrap().clone()).unwrap_or_default())),
+        Err((code, e)) => (code, HeaderMap::new(), Json(serde_json::json!({"ok": false, "error": e}))),
+    }
+}
+
+async fn post_action(State(app): State<AppState>, headers: HeaderMap, Json(a): Json<Action>) -> impl IntoResponse {
     let label = a.label();
+    if app.public && matches!(a, Action::SetExpiry { .. } | Action::Mine { blocks: Some(7..) }) {
+        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"ok": false, "error": "not available on the public demo"})));
+    }
+    let sess = match session(&app, &headers) {
+        Ok((s, _)) => s,
+        Err((code, e)) => return (code, Json(serde_json::json!({"ok": false, "error": e}))),
+    };
     {
-        let mut s = app.shared.lock().unwrap();
+        let mut s = sess.shared.lock().unwrap();
         if let Some(b) = &s.busy {
             return (StatusCode::CONFLICT, Json(serde_json::json!({"ok": false, "error": format!("busy: {b}")})));
         }
         s.busy = Some(label.clone());
     }
-    if app.jobs.lock().unwrap().send(a).is_err() {
-        app.shared.lock().unwrap().busy = None;
+    if sess.jobs.lock().unwrap().send(a).is_err() {
+        sess.shared.lock().unwrap().busy = None;
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"ok": false, "error": "worker stopped"})));
     }
     (StatusCode::ACCEPTED, Json(serde_json::json!({"ok": true, "started": label})))
@@ -770,10 +843,6 @@ fn data_dir() -> PathBuf {
         .find_map(|a| a.strip_prefix("--data-dir=").map(PathBuf::from))
         .or_else(|| std::env::var_os("RGB_ARKADE_APP_DATA").map(PathBuf::from))
         .unwrap_or_else(|| crate::paths::state().join("app-data"))
-}
-
-async fn init(shared: &Arc<StdMutex<Shared>>) -> anyhow::Result<Core> {
-    init_in(shared, data_dir()).await
 }
 
 /// Open the wallets in `state` if it holds them (app restart), else create fresh ones there.
@@ -816,15 +885,21 @@ async fn init_in(shared: &Arc<StdMutex<Shared>>, state: PathBuf) -> anyhow::Resu
 
 /// The wallets (rgb-lib, Ark client) live on one worker thread with its own runtime; actions are
 /// queued to it and run one at a time (the existing flow helpers are not `Send`).
-fn worker(shared: Arc<StdMutex<Shared>>, rx: std::sync::mpsc::Receiver<Action>, ready: tokio::sync::oneshot::Sender<anyhow::Result<()>>) {
-    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().expect("runtime");
+fn worker(shared: Arc<StdMutex<Shared>>, rx: std::sync::mpsc::Receiver<Action>, dir: PathBuf, ephemeral: bool, ready: tokio::sync::oneshot::Sender<anyhow::Result<()>>) {
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("runtime");
     rt.block_on(async move {
-        let mut core = match init(&shared).await {
+        let started = {
+            let _turn = tokio::task::block_in_place(|| ACTION_LOCK.lock().unwrap_or_else(|e| e.into_inner()));
+            init_in(&shared, dir.clone()).await
+        };
+        shared.lock().unwrap().busy = None;
+        let mut core = match started {
             Ok(c) => {
                 let _ = ready.send(Ok(()));
                 c
             }
             Err(e) => {
+                Logger { shared: shared.clone(), action: "startup".into() }.push("error", format!("{e:#}"));
                 let _ = ready.send(Err(e));
                 return;
             }
@@ -860,6 +935,14 @@ fn worker(shared: Arc<StdMutex<Shared>>, rx: std::sync::mpsc::Receiver<Action>, 
             }
             let lg = Logger { shared: shared.clone(), action: label.clone() };
             lg.push("start", label.clone());
+            let turn = ACTION_LOCK.try_lock().ok();
+            let _turn = match turn {
+                Some(t) => t,
+                None => {
+                    lg.info("waiting for other visitors' actions to finish");
+                    tokio::task::block_in_place(|| ACTION_LOCK.lock().unwrap_or_else(|e| e.into_inner()))
+                }
+            };
             match run_action(&mut core, &a, &lg).await {
                 Ok(()) => lg.push("done", label.clone()),
                 Err(e) => lg.push("error", format!("{e:#}")),
@@ -868,29 +951,62 @@ fn worker(shared: Arc<StdMutex<Shared>>, rx: std::sync::mpsc::Receiver<Action>, 
                 lg.push("error", format!("saving app state: {e:#}"));
             }
             refresh_views(&core, &shared).await;
+            drop(_turn);
             shared.lock().unwrap().busy = None;
+        }
+        // session dropped (idle): its wallets are throwaway regtest wallets
+        drop(core);
+        if ephemeral {
+            let _ = std::fs::remove_dir_all(&dir);
         }
     });
 }
 
-pub async fn run(port: u16) -> anyhow::Result<()> {
-    let shared = Arc::new(StdMutex::new(Shared::default()));
+fn spawn_session(dir: PathBuf, ephemeral: bool, public: bool, explorer: String) -> Arc<Session> {
+    let shared = Arc::new(StdMutex::new(Shared { busy: Some("creating your wallets".into()), public, explorer, ..Default::default() }));
     let (tx, rx) = std::sync::mpsc::channel::<Action>();
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let (ready_tx, _ready) = tokio::sync::oneshot::channel();
     let sh = shared.clone();
-    std::thread::spawn(move || worker(sh, rx, ready_tx));
-    let sh = shared.clone();
-    std::thread::spawn(move || miner(sh));
-    ready_rx.await.map_err(|_| anyhow!("worker died"))??;
-    let app = AppState { jobs: Arc::new(StdMutex::new(tx)), shared };
+    std::thread::spawn(move || worker(sh, rx, dir, ephemeral, ready_tx));
+    Arc::new(Session { jobs: StdMutex::new(tx), shared, last_seen: AtomicU64::new(now()) })
+}
+
+/// `--public` (or `RGB_ARKADE_PUBLIC=1`): one wallet pair per visitor (cookie), dropped after
+/// `RGB_ARKADE_SESSION_TTL` s idle (default 2 h), at most `RGB_ARKADE_MAX_SESSIONS` (40); regtest
+/// controls off except mining a few blocks; a background miner every `RGB_ARKADE_AUTOMINE` s (60).
+/// `RGB_ARKADE_EXPLORER`: tx URL prefix for the explorer links; `RGB_ARKADE_BIND`: listen address.
+pub async fn run(port: u16) -> anyhow::Result<()> {
+    let public = std::env::args().any(|a| a == "--public") || std::env::var("RGB_ARKADE_PUBLIC").is_ok_and(|v| v == "1");
+    let explorer = std::env::var("RGB_ARKADE_EXPLORER").unwrap_or_default();
+    let sessions: Arc<StdMutex<HashMap<String, Arc<Session>>>> = Arc::default();
+    if public {
+        let clock = Arc::new(StdMutex::new(Shared { automine: env_u64("RGB_ARKADE_AUTOMINE", 60), ..Default::default() }));
+        std::thread::spawn(move || miner(clock));
+        let ss = sessions.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(300));
+            let ttl = env_u64("RGB_ARKADE_SESSION_TTL", 7200);
+            ss.lock().unwrap().retain(|_, s| now().saturating_sub(s.last_seen.load(Ordering::Relaxed)) < ttl);
+        });
+    } else {
+        let s = spawn_session(data_dir(), false, false, explorer.clone());
+        let sh = s.shared.clone();
+        std::thread::spawn(move || miner(sh));
+        while s.shared.lock().unwrap().busy.is_some() {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
+        sessions.lock().unwrap().insert(LOCAL.into(), s);
+    }
+    let app = AppState { sessions, public, explorer };
     let router = axum::Router::new()
         .route("/", get(index))
         .route("/api/state", get(get_state))
         .route("/api/action", post(post_action))
         .route("/api/automine", post(post_automine))
         .with_state(app);
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
-    println!("rgb-arkade app on http://127.0.0.1:{port}");
+    let bind = std::env::var("RGB_ARKADE_BIND").unwrap_or_else(|_| "127.0.0.1".into());
+    let listener = tokio::net::TcpListener::bind((bind.as_str(), port)).await?;
+    println!("rgb-arkade app on http://{bind}:{port}{}", if public { " (public: one wallet pair per visitor)" } else { "" });
     axum::serve(listener, router).await?;
     Ok(())
 }

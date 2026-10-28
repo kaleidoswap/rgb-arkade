@@ -192,10 +192,10 @@ a.ext { color: var(--dim); text-decoration: none; font-size: 12px; } a.ext:hover
     <div class="layers"><span class="lyr btc">Bitcoin</span><span class="lyr ark">Arkade</span><span class="lyr rgb">RGB asset</span></div>
     <div class="spacer"></div>
     <div class="regtest">
-      <button class="btn sm" onclick="act({action:'mine', blocks:+v('mineN')})">Mine</button><input id="mineN" type="number" value="1" min="1" max="500" aria-label="blocks to mine"> blocks
-      <button class="btn sm" id="amBtn" onclick="toggleAutomine()">Auto-mine</button>
-      <span id="expRow" class="row"></span>
-      <button class="btn sm danger" onclick="resetAll()">Reset</button>
+      <button class="btn sm" onclick="act({action:'mine', blocks:+v('mineN')})" title="Regtest: fast-forward the bitcoin chain">Mine</button><span class="local"><input id="mineN" type="number" value="1" min="1" max="500" aria-label="blocks to mine"> blocks</span>
+      <button class="btn sm local" id="amBtn" onclick="toggleAutomine()">Auto-mine</button>
+      <span id="expRow" class="row local"></span>
+      <button class="btn sm danger" id="resetB" onclick="resetAll()">Reset</button>
     </div>
   </div>
   <div class="banner" id="demoBanner" hidden><span class="spin"></span><b>Guided demo</b><span id="demoText" class="dim"></span><span class="spacer"></span><button class="btn sm" onclick="stopDemo()">Stop after this step</button></div>
@@ -222,16 +222,17 @@ a.ext { color: var(--dim); text-decoration: none; font-size: 12px; } a.ext:hover
 const NAMES = ['alice', 'bob'];
 let st = null, busy = null, lastKey = '', demo = null, prevGroups = {}, busySince = null, firstPoll = true, NEXT = null;
 const sel = {alice: null, bob: null};
-const v = id => document.getElementById(id).value;
+const v = id => { const e = document.getElementById(id); return e ? e.value : 1; };
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const short = (s, a = 8, b = 6) => { s = String(s ?? ''); return s.length > a + b + 3 ? s.slice(0, a) + '…' + s.slice(-b) : s; };
 const dur = s => { s = Math.abs(s); return s >= 86400 ? (s/86400).toFixed(1) + ' d' : s >= 3600 ? (s/3600).toFixed(1) + ' h' : s >= 60 ? Math.round(s/60) + ' min' : Math.round(s) + ' s'; };
 const hhmm = t => new Date(t * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
 const fmt = n => Number(n ?? 0).toLocaleString('en-US');
 const ksat = n => n >= 1e6 ? (n/1e6).toFixed(n % 1e6 ? 2 : 0) + 'M' : n >= 1000 ? (n/1000).toFixed(n % 1000 ? 1 : 0) + 'k' : String(n);
-const EXPLORER = location.protocol + '//' + location.hostname + ':3000/tx/';
+const EXPLORER_LOCAL = location.protocol + '//' + location.hostname + ':3000/tx/';
+const explorer = () => (st && st.explorer) || EXPLORER_LOCAL;
 const txOf = h => (String(h).match(/^[0-9a-f]{64}/) || [])[0];
-const hash = h => `<span class="hash" title="${esc(h)} · click to copy" onclick="copy('${esc(h)}')">${esc(short(h, 6, 4))}</span>${txOf(h) ? ` <a class="ext" href="${EXPLORER}${txOf(h)}" target="_blank" rel="noopener" title="Open in the regtest explorer">↗</a>` : ''}`;
+const hash = h => `<span class="hash" title="${esc(h)} · click to copy" onclick="copy('${esc(h)}')">${esc(short(h, 6, 4))}</span> ${txOf(h) ? ` <a class="ext" href="${explorer()}${txOf(h)}" target="_blank" rel="noopener" title="Open in the regtest explorer">↗</a>` : ''}`;
 const exitDelay = () => (st && st.arkd && st.arkd.exit_delay) || 'the exit delay';
 
 function tab(t) {
@@ -259,7 +260,7 @@ async function act(body) {
   poll();
   return true;
 }
-function resetAll() { if (confirm('Delete both wallets and start fresh?')) act({action: 'reset'}); }
+function resetAll() { if (confirm('Throw away both wallets and start fresh?')) act({action: 'reset'}); }
 async function toggleAutomine() {
   await fetch('/api/automine', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({seconds: st && st.automine ? 0 : 10})});
   poll();
@@ -430,6 +431,8 @@ function render() {
   document.getElementById('height').textContent = 'block ' + fmt(st.height) + (st.automine ? ' · auto' : '');
   document.getElementById('amBtn').textContent = st.automine ? 'Stop auto-mine' : 'Auto-mine';
   document.getElementById('demoBtn').disabled = !!(busy || demo);
+  document.querySelectorAll('.local').forEach(e => e.hidden = !!st.public);
+  if (st.public) { document.getElementById('resetB').textContent = 'New wallets'; document.getElementById('mineN').value = 1; }
   const blocks = /blocks/.test(exitDelay()), er = document.getElementById('expRow');
   if (er.dataset.mode !== String(blocks)) {
     er.dataset.mode = String(blocks);
@@ -460,8 +463,11 @@ function render() {
   firstPoll = false;
 }
 async function poll() {
-  try { st = await (await fetch('/api/state')).json(); render(); }
-  catch (e) { const bc = document.getElementById('busy'); bc.className = 'chip'; bc.innerHTML = '<span class="dot off"></span>app unreachable'; }
+  try {
+    const r = await fetch('/api/state'), j = await r.json();
+    if (!r.ok) { const bc = document.getElementById('busy'); bc.className = 'chip busy'; bc.textContent = j.error || 'unavailable'; return; }
+    st = j; render();
+  } catch (e) { const bc = document.getElementById('busy'); bc.className = 'chip'; bc.innerHTML = '<span class="dot off"></span>app unreachable'; }
 }
 
 // ---------------------------------------------------------------- guided demo
