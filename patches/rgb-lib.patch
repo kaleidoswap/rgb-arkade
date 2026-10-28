@@ -917,7 +917,7 @@ index fb204cf..5a9ebc9 100644
              if asset_schema == AssetSchema::Ifa {
                  let contract_id = valid_consignment.contract_id();
 diff --git a/src/wallet/rust_only.rs b/src/wallet/rust_only.rs
-index 11d45e5..56890a0 100644
+index 11d45e5..e16ad6f 100644
 --- a/src/wallet/rust_only.rs
 +++ b/src/wallet/rust_only.rs
 @@ -4,6 +4,15 @@
@@ -936,7 +936,7 @@ index 11d45e5..56890a0 100644
  /// RGB asset-specific information to color a transaction
  #[derive(Debug, Clone)]
  pub struct AssetColoringInfo {
-@@ -407,6 +416,724 @@ impl Wallet {
+@@ -407,6 +416,746 @@ impl Wallet {
          ))
      }
  
@@ -1103,6 +1103,8 @@ index 11d45e5..56890a0 100644
 +        runtime.consume_fascia(fascia, None)?;
 +        let explicit = ExplicitSeal::with(seal_txid, seal_outpoint.vout);
 +        let transfer = runtime.transfer(contract_id, vec![explicit], vec![], Some(witness_txid))?;
++        drop(runtime);
++        self.ark_set_txos_spent(&prev_outputs.iter().map(|o| o.to_string()).collect::<Vec<_>>(), true)?;
 +        info!(self.logger(), "Color PSBT to explicit outpoint completed");
 +        Ok(vec![transfer])
 +    }
@@ -1226,6 +1228,7 @@ index 11d45e5..56890a0 100644
 +            status: s!("pending"),
 +        });
 +        self.ark_json_save(ARK_TRANSFERS_FILE, &log)?;
++        self.ark_set_txos_spent(&inputs, true)?;
 +        let mut reg: HashMap<String, crate::ark_proof::ArkVtxoRecord> = self.ark_json_load(ARK_VTXOS_FILE);
 +        for i in &inputs {
 +            if let Some(r) = reg.get_mut(i) {
@@ -1571,6 +1574,24 @@ index 11d45e5..56890a0 100644
 +        Ok(self.ark_json_load(ARK_TRANSFERS_FILE))
 +    }
 +
++    /// [rgb-arkade] rgb-lib marks a wallet UTXO spent only when it broadcasts the spending tx
++    /// itself; custom-colored txs go out through Arkade or the caller, so their wallet inputs are
++    /// marked here (and unmarked by a rollback), else the stock balance keeps counting them.
++    fn ark_set_txos_spent(&self, outpoints: &[String], spent: bool) -> Result<(), Error> {
++        let txn = self.database().begin_transaction()?;
++        for o in outpoints {
++            let Some((txid, vout)) = o.rsplit_once(':') else { continue };
++            let Ok(vout) = vout.parse::<u32>() else { continue };
++            if let Some(db_txo) = txn.get_txo(&Outpoint { txid: txid.to_string(), vout })? {
++                let mut db_txo: DbTxoActMod = db_txo.into();
++                db_txo.spent = ActiveValue::Set(spent);
++                txn.update_txo(db_txo)?;
++            }
++        }
++        txn.commit()?;
++        Ok(())
++    }
++
 +    /// [rgb-arkade] Roll back a custom-colored transfer whose witness can never exist
 +    /// (e.g. the forfeit of a failed batch): archive the witness in the RGB stock (its
 +    /// assignments disappear, the consumed state is spendable again), un-mark the consumed
@@ -1599,6 +1620,7 @@ index 11d45e5..56890a0 100644
 +        for r in log.iter_mut() {
 +            if r.witness == witness_txid {
 +                r.status = s!("rolled_back");
++                self.ark_set_txos_spent(&r.inputs, false)?;
 +            }
 +        }
 +        self.ark_json_save(ARK_TRANSFERS_FILE, &log)?;
@@ -1661,7 +1683,7 @@ index 11d45e5..56890a0 100644
      /// Consume an RGB fascia.
      ///
      /// <div class="warning">This method is meant for special usage and is normally not needed, use
-@@ -449,8 +1176,9 @@ impl Wallet {
+@@ -449,8 +1198,9 @@ impl Wallet {
      ) -> Result<UpdateRes, Error> {
          info!(self.logger(), "Updating witnesses...");
          self.check_online(online)?;

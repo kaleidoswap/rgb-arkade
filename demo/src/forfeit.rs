@@ -705,10 +705,17 @@ pub async fn run_exit() -> anyhow::Result<()> {
         rec("proof_de", format!("{} B, {} PSBTs, {} witnesses", st.bytes, st.n_psbts, st.n_witnesses));
     }
     let erin_settled = receive_with_attestation("erin", &dave, &mut erin_rgb, &erin_online, &regtest, &fc, v, c, &cons_de, &asset_id, &mut rec).await?;
-    let pass = erin_settled == ISSUE_AMOUNT;
+    // the senders' stock rgb-lib balances must not keep counting what they moved
+    bl(|| alice_rgb.refresh(alice_online.clone(), None, vec![], false))?;
+    bl(|| dave_rgb.refresh(dave_online.clone(), None, vec![], false))?;
+    let alice_left = bl(|| alice_rgb.get_asset_balance(asset_id.clone()))?;
+    let dave_left = bl(|| dave_rgb.get_asset_balance(asset_id.clone()))?;
+    rec("alice_stock_balance_after", format!("{alice_left:?}"));
+    rec("dave_stock_balance_after", format!("{dave_left:?}"));
+    let pass = erin_settled == ISSUE_AMOUNT && alice_left.spendable == 0 && dave_left.spendable == 0;
     rec("PASS", pass.to_string());
     println!("\nCOLLABORATIVE EXIT RESULT: {}", if pass { "PASS" } else { "FAIL" });
-    ensure!(pass, "Erin balance check failed");
+    ensure!(pass, "balance check failed (Erin {erin_settled}, Alice left {alice_left:?}, Dave left {dave_left:?})");
     Ok(())
 }
 
