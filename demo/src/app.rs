@@ -805,8 +805,15 @@ fn session(app: &AppState, headers: &HeaderMap, create: bool) -> Result<Option<(
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.rsplit(',').next())
-        .map(|v| v.trim())
-        .map(|v| if v.contains(':') { v.split(':').take(4).collect::<Vec<_>>().join(":") } else { v.to_string() })
+        .map(|v| match v.trim().parse::<std::net::IpAddr>() {
+            Ok(std::net::IpAddr::V6(a)) if a.to_ipv4_mapped().is_none() => {
+                let g = a.segments();
+                format!("{:x}:{:x}:{:x}:{:x}::/64", g[0], g[1], g[2], g[3])
+            }
+            Ok(std::net::IpAddr::V6(a)) => a.to_ipv4_mapped().map(|v4| v4.to_string()).unwrap_or_default(),
+            Ok(std::net::IpAddr::V4(a)) => a.to_string(),
+            Err(_) => "unparsed".into(),
+        })
         .unwrap_or_else(|| "host".into());
     let lru = |map: &HashMap<String, Arc<Session>>, ip: Option<&str>| {
         map.iter().filter(|(_, s)| ip.is_none_or(|ip| s.ip == ip)).min_by_key(|(_, s)| s.last_seen.load(Ordering::Relaxed)).map(|(k, _)| k.clone())
