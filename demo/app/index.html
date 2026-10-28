@@ -445,6 +445,8 @@ function render() {
   NEXT = busy || demo || running ? null : next;
   const keep = {}; document.querySelectorAll('.wallet input').forEach(e => keep[e.id] = e.value);
   (st.wallets || []).forEach((w, i) => { const el = document.getElementById('w' + i); if (el) el.innerHTML = walletHtml(w, i); });
+  if (!(st.wallets || []).length) NAMES.forEach((n, i) => { document.getElementById('w' + i).innerHTML = `<div class="whead"><div class="avatar av-${n}">${n[0].toUpperCase()}</div><h2>${n}</h2></div>
+    <div class="panel"><h4>${busy ? 'Creating Alice and Bob…' : 'You get your own Alice and Bob: two fresh regtest wallets, nothing to install.'}</h4>${busy ? '<span class="spin"></span>' : `<button class="btn" onclick="act({action:'sync'})">Create my wallets</button>`}</div>`; });
   Object.entries(keep).forEach(([id, val]) => { const e = document.getElementById(id); if (e) e.value = val; });
   const key = st.log.length + ':' + (st.log.length ? st.log[st.log.length - 1].t + st.log[st.log.length - 1].msg : '') + (busy ? Math.floor(Date.now() / 5000) : '');
   if (key !== lastKey) {
@@ -491,6 +493,11 @@ async function runDemo() {
   tab('play');
   demo = { stop: false };
   document.getElementById('demoBanner').hidden = false; render();
+  if (!(st.wallets || []).length) {
+    document.getElementById('demoText').textContent = 'Creating your wallets';
+    await act({action: 'sync'});
+    while (!(st.wallets || []).length || st.busy) { await new Promise(r => setTimeout(r, 1500)); await poll(); }
+  }
   let A = null;
   const asset = () => { if (!A) { const h = (st.wallets[0].holdings || []).slice(-1)[0]; A = h && h.asset_id; } return A; };
   const seq = [

@@ -101,11 +101,14 @@ struct Session {
     jobs: StdMutex<std::sync::mpsc::Sender<Action>>,
     shared: Arc<StdMutex<Shared>>,
     last_seen: AtomicU64,
+    ip: String,
 }
 
 #[derive(Clone)]
 struct AppState {
     sessions: Arc<StdMutex<HashMap<String, Arc<Session>>>>,
+    /// last session creation per client address (public mode)
+    created: Arc<StdMutex<HashMap<String, u64>>>,
     public: bool,
     explorer: String,
 }
@@ -773,30 +776,59 @@ async fn index() -> Html<&'static str> {
     Html(INDEX)
 }
 
-/// The caller's session: the single local one, or (public mode) the one named by the cookie,
-/// created on first use. The second value is a Set-Cookie header for a new session.
-fn session(app: &AppState, headers: &HeaderMap) -> Result<(Arc<Session>, Option<String>), (StatusCode, String)> {
+/// The caller's session: the single local one, or (public mode) the one named by the cookie.
+/// With `create`, a visitor without a live session gets a new one under a fresh server-side id
+/// (never the id the client sent): the least recently used session makes room when the demo is
+/// full or the visitor's address already holds `RGB_ARKADE_SESSIONS_PER_IP` (3). The second value
+/// is the Set-Cookie header for a new session.
+fn session(app: &AppState, headers: &HeaderMap, create: bool) -> Result<Option<(Arc<Session>, Option<String>)>, (StatusCode, String)> {
     let mut map = app.sessions.lock().unwrap();
     if !app.public {
-        return map.get(LOCAL).cloned().map(|s| (s, None)).ok_or((StatusCode::SERVICE_UNAVAILABLE, "starting".into()));
+        return map.get(LOCAL).cloned().map(|s| Some((s, None))).ok_or((StatusCode::SERVICE_UNAVAILABLE, "starting".into()));
     }
     let sid = headers
         .get(header::COOKIE)
         .and_then(|v| v.to_str().ok())
-        .and_then(|c| c.split(';').find_map(|kv| kv.trim().strip_prefix(&format!("{COOKIE}="))))
-        .filter(|s| s.len() == 32 && s.chars().all(|c| c.is_ascii_hexdigit()))
-        .map(str::to_string);
-    if let Some(s) = sid.as_ref().and_then(|id| map.get(id)) {
+        .and_then(|c| c.split(';').find_map(|kv| kv.trim().strip_prefix(&format!("{COOKIE}="))));
+    if let Some(s) = sid.and_then(|id| map.get(id)) {
         s.last_seen.store(now(), Ordering::Relaxed);
-        return Ok((s.clone(), None));
+        return Ok(Some((s.clone(), None)));
+    }
+    if !create {
+        return Ok(None);
+    }
+    // Caddy appends the client address to X-Forwarded-For
+    let ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.rsplit(',').next())
+        .map(|v| v.trim().to_string())
+        .unwrap_or_default();
+    let lru = |map: &HashMap<String, Arc<Session>>, ip: Option<&str>| {
+        map.iter().filter(|(_, s)| ip.is_none_or(|ip| s.ip == ip)).min_by_key(|(_, s)| s.last_seen.load(Ordering::Relaxed)).map(|(k, _)| k.clone())
+    };
+    {
+        let mut created = app.created.lock().unwrap();
+        if now().saturating_sub(created.get(&ip).copied().unwrap_or(0)) < env_u64("RGB_ARKADE_NEW_SESSION_EVERY", 20) {
+            return Err((StatusCode::TOO_MANY_REQUESTS, "new wallets were just created from your address: wait a few seconds".into()));
+        }
+        created.retain(|_, t| now().saturating_sub(*t) < 3600);
+        created.insert(ip.clone(), now());
+    }
+    if map.values().filter(|s| s.ip == ip).count() >= env_u64("RGB_ARKADE_SESSIONS_PER_IP", 3) as usize {
+        if let Some(k) = lru(&map, Some(&ip)) {
+            map.remove(&k);
+        }
     }
     if map.len() >= env_u64("RGB_ARKADE_MAX_SESSIONS", 40) as usize {
-        return Err((StatusCode::SERVICE_UNAVAILABLE, "the demo is full right now, try again in a while".into()));
+        if let Some(k) = lru(&map, None) {
+            map.remove(&k);
+        }
     }
-    let id = sid.unwrap_or_else(|| rand::random::<[u8; 16]>().iter().map(|b| format!("{b:02x}")).collect());
-    let s = spawn_session(data_dir().join("sessions").join(&id), true, app.public, app.explorer.clone());
+    let id: String = rand::random::<[u8; 16]>().iter().map(|b| format!("{b:02x}")).collect();
+    let s = spawn_session(data_dir().join("sessions").join(&id), true, app.public, app.explorer.clone(), ip);
     map.insert(id.clone(), s.clone());
-    Ok((s, Some(format!("{COOKIE}={id}; Path=/; Max-Age=604800; HttpOnly; SameSite=Lax"))))
+    Ok(Some((s, Some(format!("{COOKIE}={id}; Path=/; Max-Age=604800; HttpOnly; SameSite=Lax")))))
 }
 
 fn with_cookie(cookie: Option<String>) -> HeaderMap {
@@ -808,33 +840,39 @@ fn with_cookie(cookie: Option<String>) -> HeaderMap {
 }
 
 async fn get_state(State(app): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    match session(&app, &headers) {
-        Ok((s, cookie)) => (StatusCode::OK, with_cookie(cookie), Json(serde_json::to_value(s.shared.lock().unwrap().clone()).unwrap_or_default())),
+    match session(&app, &headers, false) {
+        Ok(Some((s, cookie))) => (StatusCode::OK, with_cookie(cookie), Json(serde_json::to_value(s.shared.lock().unwrap().clone()).unwrap_or_default())),
+        // public visitor without wallets yet: they are created by the first action
+        Ok(None) => (StatusCode::OK, HeaderMap::new(), Json(serde_json::to_value(Shared { public: true, explorer: app.explorer.clone(), ..Default::default() }).unwrap_or_default())),
         Err((code, e)) => (code, HeaderMap::new(), Json(serde_json::json!({"ok": false, "error": e}))),
     }
 }
 
 async fn post_action(State(app): State<AppState>, headers: HeaderMap, Json(a): Json<Action>) -> impl IntoResponse {
+    let err = |code: StatusCode, e: String| (code, HeaderMap::new(), Json(serde_json::json!({"ok": false, "error": e})));
     let label = a.label();
     if app.public && matches!(a, Action::SetExpiry { .. } | Action::Mine { blocks: Some(7..) }) {
-        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"ok": false, "error": "not available on the public demo"})));
+        return err(StatusCode::FORBIDDEN, "not available on the public demo".into());
     }
-    let sess = match session(&app, &headers) {
-        Ok((s, _)) => s,
-        Err((code, e)) => return (code, Json(serde_json::json!({"ok": false, "error": e}))),
+    let sess = match session(&app, &headers, true) {
+        // new visitor: the wallets are being created; the action itself is not queued
+        Ok(Some((_, Some(cookie)))) => return (StatusCode::ACCEPTED, with_cookie(Some(cookie)), Json(serde_json::json!({"ok": true, "started": "creating your wallets"}))),
+        Ok(Some((s, None))) => s,
+        Ok(None) => unreachable!("create = true"),
+        Err((code, e)) => return err(code, e),
     };
     {
         let mut s = sess.shared.lock().unwrap();
         if let Some(b) = &s.busy {
-            return (StatusCode::CONFLICT, Json(serde_json::json!({"ok": false, "error": format!("busy: {b}")})));
+            return err(StatusCode::CONFLICT, format!("busy: {b}"));
         }
         s.busy = Some(label.clone());
     }
     if sess.jobs.lock().unwrap().send(a).is_err() {
         sess.shared.lock().unwrap().busy = None;
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"ok": false, "error": "worker stopped"})));
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "worker stopped".into());
     }
-    (StatusCode::ACCEPTED, Json(serde_json::json!({"ok": true, "started": label})))
+    (StatusCode::ACCEPTED, HeaderMap::new(), Json(serde_json::json!({"ok": true, "started": label})))
 }
 
 /// Data dir: `--data-dir=<path>`, else `$RGB_ARKADE_APP_DATA`, else `state/app-data`.
@@ -890,6 +928,10 @@ fn worker(shared: Arc<StdMutex<Shared>>, rx: std::sync::mpsc::Receiver<Action>, 
     rt.block_on(async move {
         let started = {
             let _turn = tokio::task::block_in_place(|| ACTION_LOCK.lock().unwrap_or_else(|e| e.into_inner()));
+            // evicted while waiting for its turn: nothing to create
+            if matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)) {
+                return;
+            }
             init_in(&shared, dir.clone()).await
         };
         shared.lock().unwrap().busy = None;
@@ -962,13 +1004,13 @@ fn worker(shared: Arc<StdMutex<Shared>>, rx: std::sync::mpsc::Receiver<Action>, 
     });
 }
 
-fn spawn_session(dir: PathBuf, ephemeral: bool, public: bool, explorer: String) -> Arc<Session> {
+fn spawn_session(dir: PathBuf, ephemeral: bool, public: bool, explorer: String, ip: String) -> Arc<Session> {
     let shared = Arc::new(StdMutex::new(Shared { busy: Some("creating your wallets".into()), public, explorer, ..Default::default() }));
     let (tx, rx) = std::sync::mpsc::channel::<Action>();
     let (ready_tx, _ready) = tokio::sync::oneshot::channel();
     let sh = shared.clone();
     std::thread::spawn(move || worker(sh, rx, dir, ephemeral, ready_tx));
-    Arc::new(Session { jobs: StdMutex::new(tx), shared, last_seen: AtomicU64::new(now()) })
+    Arc::new(Session { jobs: StdMutex::new(tx), shared, last_seen: AtomicU64::new(now()), ip })
 }
 
 /// `--public` (or `RGB_ARKADE_PUBLIC=1`): one wallet pair per visitor (cookie), dropped after
@@ -989,7 +1031,7 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
             ss.lock().unwrap().retain(|_, s| now().saturating_sub(s.last_seen.load(Ordering::Relaxed)) < ttl);
         });
     } else {
-        let s = spawn_session(data_dir(), false, false, explorer.clone());
+        let s = spawn_session(data_dir(), false, false, explorer.clone(), String::new());
         let sh = s.shared.clone();
         std::thread::spawn(move || miner(sh));
         while s.shared.lock().unwrap().busy.is_some() {
@@ -997,7 +1039,7 @@ pub async fn run(port: u16) -> anyhow::Result<()> {
         }
         sessions.lock().unwrap().insert(LOCAL.into(), s);
     }
-    let app = AppState { sessions, public, explorer };
+    let app = AppState { sessions, created: Arc::default(), public, explorer };
     let router = axum::Router::new()
         .route("/", get(index))
         .route("/api/state", get(get_state))
