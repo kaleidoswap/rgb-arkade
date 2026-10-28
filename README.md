@@ -122,7 +122,7 @@ Limits: one action runs at a time; regtest only; an action interrupted by a rest
 ```bash
 scripts/run-scenario.sh refresh                 # one scenario, log in logs/scenario-refresh.log
 scripts/run-all.sh quick                        # everything except the time-scaled scenarios (make test)
-make regtest-up-fast                            # restart clean with exit delays in blocks: quick suite in minutes; back to seconds for the time-scaled ones: scripts/regtest-up.sh clean
+make regtest-up-fast                            # restart clean with exit delays in blocks: quick suite in minutes (scripted runs only, not the app); back to seconds for the time-scaled ones: scripts/regtest-up.sh clean
 scripts/run-all.sh                              # full suite, ~3 h (make test-all)
 scripts/bench.sh                                # payload size / validation time, see docs/test-results.md
 ```

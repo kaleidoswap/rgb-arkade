@@ -2,260 +2,256 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>RGB on Arkade · KaleidoSwap prototype</title>
+<title>RGB on Arkade · KaleidoSwap</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://api.fontshare.com">
+<link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg: #0b0d12; --bg2: #11141b; --card: #151923; --card2: #1a1f2b; --line: #262c3a; --line2: #313849;
-  --fg: #eef0f6; --fg2: #b7bdcc; --dim: #7d869a;
-  --a1: #8b5cf6; --a2: #22d3ee; --a3: #f472b6;
-  --ok: #34d399; --err: #f87171; --warn: #fbbf24; --info: #60a5fa;
-  --r: 14px;
+  --bg: #0D1813; --card: #111110; --card2: #161816; --line: #2a2d2a; --line2: #3D3D3A;
+  --fg: #FFFFFF; --fg2: #c9cbc6; --dim: #9A9A94;
+  --btc: #F7931A; --ark: #6F32FF; --ark2: #A48AFF; --rgb: #15E99A; --rgb2: #17B581;
+  --err: #EF4444; --warn: #F59E0B;
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; }
-body { font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background:
-  radial-gradient(1200px 500px at 10% -10%, rgba(139,92,246,.18), transparent 60%),
-  radial-gradient(900px 400px at 100% 0%, rgba(34,211,238,.12), transparent 60%), var(--bg); color: var(--fg); min-height: 100vh; }
-button, input, select { font: inherit; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
-.dim { color: var(--dim); } .fg2 { color: var(--fg2); }
+body { font: 15px/1.5 'Satoshi', system-ui, sans-serif; background: var(--bg); color: var(--fg); min-height: 100vh; }
+button, input { font: inherit; color: inherit; }
+button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid var(--rgb); outline-offset: 2px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.dim { color: var(--dim); }
+[hidden] { display: none !important; }
 
-/* top bar */
-header { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 14px; padding: 10px 22px;
-  background: rgba(11,13,18,.82); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
-.brand { display: flex; align-items: center; gap: 10px; }
-.logo { width: 30px; height: 30px; border-radius: 9px; background: conic-gradient(from 200deg, var(--a1), var(--a2), var(--a3), var(--a1)); box-shadow: 0 0 18px rgba(139,92,246,.45); }
-.brand b { font-size: 16px; letter-spacing: .2px; } .brand small { display: block; color: var(--dim); font-size: 11.5px; margin-top: -2px; }
+/* header */
+header { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; gap: 18px; padding: 10px 24px; background: rgba(13,24,19,.9); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand svg { display: block; }
+.brand b { font-size: 17px; letter-spacing: -.01em; display: block; }
+.brand small { color: var(--dim); font-size: 12.5px; }
+.brand .on-ark { display: flex; align-items: center; gap: 7px; color: var(--dim); font-size: 13px; padding-left: 12px; border-left: 1px solid var(--line2); }
+.tabs { display: flex; gap: 4px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 3px; }
+.tabs button { border: 0; background: none; padding: 6px 16px; border-radius: 7px; cursor: pointer; font-weight: 500; color: var(--dim); transition: .15s var(--ease); }
+.tabs button.on { background: var(--card2); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line2); }
 .spacer { flex: 1; }
-.chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; background: var(--card); border: 1px solid var(--line); color: var(--fg2); font-size: 12px; white-space: nowrap; }
-.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); }
-.dot.off { background: var(--err); box-shadow: 0 0 8px var(--err); }
-.busy-chip { background: rgba(251,191,36,.08); border-color: rgba(251,191,36,.35); color: var(--warn); }
-.spin { width: 13px; height: 13px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; display: inline-block; flex: none; }
+.chip { display: inline-flex; align-items: center; gap: 7px; padding: 4px 11px; border-radius: 999px; border: 1px solid var(--line); color: var(--fg2); font-size: 13px; white-space: nowrap; }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--rgb); }
+.dot.off { background: var(--err); }
+.chip.busy { color: var(--warn); border-color: rgba(245,158,11,.4); }
+.spin { width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; display: inline-block; flex: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* layer language: bitcoin / arkade / rgb */
+.lyr { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--fg2); white-space: nowrap; }
+.lyr::before { content: ''; width: 10px; height: 10px; border-radius: 50%; background: var(--c); }
+.lyr.btc { --c: var(--btc); } .lyr.ark { --c: var(--ark); } .lyr.rgb { --c: var(--rgb); }
+
 /* buttons */
-.btn { display: inline-flex; align-items: center; gap: 7px; padding: 7px 12px; border-radius: 10px; border: 1px solid var(--line2); background: var(--card2); color: var(--fg); cursor: pointer; font-size: 13px; transition: .15s; white-space: nowrap; }
-.btn:hover:not(:disabled) { border-color: #4a5370; background: #202638; }
-.btn.primary { background: linear-gradient(135deg, var(--a1), #6d28d9); border-color: transparent; box-shadow: 0 4px 16px rgba(139,92,246,.3); }
-.btn.primary:hover:not(:disabled) { filter: brightness(1.1); background: linear-gradient(135deg, var(--a1), #6d28d9); }
-.btn.ghost { background: transparent; }
-.btn.danger { border-color: rgba(248,113,113,.4); color: #fecaca; }
-.btn:disabled { opacity: .42; cursor: not-allowed; }
-.btn.sm { padding: 4px 9px; font-size: 12px; border-radius: 8px; }
-input[type=number], select { background: var(--bg2); color: var(--fg); border: 1px solid var(--line2); border-radius: 9px; padding: 6px 8px; font-size: 13px; }
-input[type=number] { width: 92px; }
-select { max-width: 190px; }
+.btn { display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line2); background: transparent; cursor: pointer; font-size: 14px; font-weight: 500; transition: .15s var(--ease); white-space: nowrap; }
+.btn:hover:not(:disabled) { background: var(--card2); border-color: #55584f; }
+.btn:disabled { opacity: .38; cursor: not-allowed; }
+.btn.cta { background: linear-gradient(135deg, #15E99A 0%, #6F32FF 100%); border: 0; color: #0D1813; font-weight: 700; }
+.btn.cta:hover:not(:disabled) { filter: brightness(1.08); background: linear-gradient(135deg, #15E99A 0%, #6F32FF 100%); }
+.btn.sm { padding: 5px 10px; font-size: 13px; }
+.btn.danger { color: #fca5a5; border-color: rgba(239,68,68,.4); }
+.btn .ly { display: inline-flex; gap: 3px; }
+.btn .ly i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.btn.next { border-color: var(--rgb); box-shadow: 0 0 0 3px rgba(21,233,154,.18); }
+i.b { background: var(--btc); } i.a { background: var(--ark); } i.r { background: var(--rgb); }
+input[type=number] { width: 96px; background: var(--card); border: 1px solid var(--line2); border-radius: 8px; padding: 5px 8px; font-size: 14px; }
 
-/* stepper */
-.wrap { padding: 16px 22px 26px; max-width: 1760px; margin: 0 auto; }
-.hero { display: flex; gap: 16px; align-items: stretch; margin-bottom: 14px; flex-wrap: wrap; }
-.steps { flex: 1 1 760px; display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 10px; }
-.step { position: relative; padding: 8px 10px; border-radius: 10px; border: 1px solid transparent; cursor: help; }
-.step .n { width: 22px; height: 22px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 12px; font-weight: 700; background: var(--card2); border: 1px solid var(--line2); color: var(--fg2); margin-right: 6px; }
-.step b { font-size: 13px; } .step p { margin: 4px 0 0; font-size: 11.5px; color: var(--dim); line-height: 1.35; }
-.step.done .n { background: rgba(52,211,153,.15); border-color: rgba(52,211,153,.5); color: var(--ok); }
-.step.next { background: rgba(139,92,246,.10); border-color: rgba(139,92,246,.45); }
-.step.next .n { background: var(--a1); color: #fff; border-color: var(--a1); }
-.step.run { background: rgba(251,191,36,.07); border-color: rgba(251,191,36,.4); }
-.controls { flex: 0 1 360px; background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 10px 12px; display: flex; flex-direction: column; gap: 7px; }
-.controls h4 { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); display: flex; align-items: center; gap: 6px; }
-.row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-.demo-banner { display: none; margin-bottom: 12px; padding: 9px 14px; border-radius: 12px; background: linear-gradient(90deg, rgba(139,92,246,.18), rgba(34,211,238,.1)); border: 1px solid rgba(139,92,246,.4); align-items: center; gap: 10px; }
-.demo-banner.on { display: flex; }
+/* playground */
+.wrap { max-width: 1680px; margin: 0 auto; padding: 18px 24px 30px; }
+.toolbar { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin-bottom: 16px; }
+.toolbar .layers { display: flex; gap: 16px; }
+.regtest { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--dim); font-size: 13px; }
+.banner { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; padding: 10px 14px; border-radius: 10px; border: 1px solid rgba(21,233,154,.35); background: rgba(21,233,154,.06); }
+.grid { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr) minmax(320px,.9fr); gap: 16px; align-items: start; }
+@media (max-width: 1280px) { .grid { grid-template-columns: 1fr 1fr; } #activity { grid-column: 1 / -1; } }
+@media (max-width: 780px) { .grid { grid-template-columns: 1fr; } .wrap { padding: 14px 16px; } header { padding: 10px 16px; } .brand .on-ark { display: none; } }
 
-/* main grid */
-main { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr) minmax(0,1.05fr); gap: 14px; }
-@media (max-width: 1250px) { main { grid-template-columns: 1fr 1fr; } #activity { grid-column: 1 / -1; } .steps { grid-template-columns: repeat(3, 1fr); } }
-@media (max-width: 760px) { main { grid-template-columns: 1fr; } .steps { grid-template-columns: repeat(2, 1fr); } header { flex-wrap: wrap; } }
-.card { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 14px 16px; min-width: 0; }
-.whead { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-.avatar { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; color: #fff; }
-.av-alice { background: linear-gradient(135deg, #8b5cf6, #ec4899); } .av-bob { background: linear-gradient(135deg, #06b6d4, #3b82f6); }
-.whead h2 { margin: 0; font-size: 17px; text-transform: capitalize; }
-.addr { cursor: pointer; } .addr:hover { color: var(--fg); }
-.sect { margin-top: 12px; }
-.sect > .t { font-size: 11.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--dim); margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
-.bal { display: flex; align-items: baseline; gap: 8px; }
-.big { font-size: 24px; font-weight: 700; letter-spacing: -.3px; }
-.unit { color: var(--fg2); font-size: 13px; }
-.asset { background: var(--card2); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; }
-.asset .top { display: flex; align-items: center; gap: 8px; }
-.ticker { font-weight: 700; padding: 2px 8px; border-radius: 7px; background: linear-gradient(135deg, rgba(139,92,246,.3), rgba(34,211,238,.25)); font-size: 12px; }
-.bar { display: flex; height: 7px; border-radius: 5px; overflow: hidden; background: var(--bg2); margin: 8px 0 6px; }
-.bar i { display: block; height: 100%; }
-.c-active { background: var(--ok); } .c-recover { background: var(--warn); } .c-unrolled { background: var(--info); } .c-flight { background: var(--a3); }
-.legend { display: grid; grid-template-columns: repeat(4, auto); gap: 4px 12px; font-size: 12px; color: var(--fg2); justify-content: start; }
-.legend span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
-.legend em { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
-.stock { font-size: 11.5px; color: var(--dim); margin-top: 5px; }
-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-td, th { padding: 5px 4px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
-th { color: var(--dim); font-weight: 500; font-size: 11.5px; }
-tr:last-child td { border-bottom: 0; }
-.tag { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid; white-space: nowrap; }
-.tag.vtxo { color: #a7f3d0; border-color: rgba(52,211,153,.4); background: rgba(52,211,153,.08); }
-.tag.unrolled { color: #bfdbfe; border-color: rgba(96,165,250,.4); background: rgba(96,165,250,.08); }
-.tag.exit-output { color: #ddd6fe; border-color: rgba(139,92,246,.45); background: rgba(139,92,246,.1); }
-.tag.onchain { color: #fde68a; border-color: rgba(251,191,36,.4); background: rgba(251,191,36,.08); }
-.tag.swept { color: #fecaca; border-color: rgba(248,113,113,.5); background: rgba(248,113,113,.1); }
-.empty { color: var(--dim); font-size: 12.5px; padding: 6px 0; }
-details.fold > summary { cursor: pointer; list-style: none; font-size: 11.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--dim); display: flex; align-items: center; gap: 6px; }
-details.fold > summary::before { content: '▸'; transition: .15s; } details.fold[open] > summary::before { transform: rotate(90deg); }
-details.fold > summary::-webkit-details-marker { display: none; }
-.acts { display: flex; flex-direction: column; gap: 8px; }
-.act { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.why { font-size: 11.5px; color: var(--dim); }
-.grp { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .07em; margin-top: 4px; }
+.wallet { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; min-width: 0; }
+.whead { display: flex; align-items: center; gap: 12px; }
+.avatar { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 16px; color: #0D1813; }
+.av-alice { background: var(--rgb); } .av-bob { background: var(--ark2); }
+.whead h2 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -.01em; text-transform: capitalize; }
+.addr { cursor: pointer; color: var(--dim); } .addr:hover { color: var(--fg); }
+.totals { display: flex; gap: 10px; flex-wrap: wrap; margin: 14px 0 4px; }
+.total { padding: 8px 12px; border-radius: 10px; background: var(--card2); border: 1px solid var(--line); min-width: 0; }
+.total b { font-size: 20px; letter-spacing: -.02em; } .total span { color: var(--dim); font-size: 13px; margin-left: 4px; }
+.total.asset { border-color: rgba(21,233,154,.35); }
+.total small { display: block; color: var(--dim); font-size: 12px; }
 
-/* tooltips */
-[data-tip] { position: relative; }
-.q { display: inline-grid; place-items: center; width: 15px; height: 15px; border-radius: 50%; font-size: 10px; font-weight: 700; background: var(--card2); border: 1px solid var(--line2); color: var(--fg2); cursor: help; text-transform: none; letter-spacing: 0; }
-[data-tip]:hover::after { content: attr(data-tip); position: absolute; left: 50%; top: calc(100% + 8px); transform: translateX(-50%); width: max-content; max-width: 300px; white-space: normal; z-index: 50;
-  background: #0f1219; color: var(--fg); border: 1px solid var(--line2); border-radius: 10px; padding: 8px 10px; font-size: 12px; line-height: 1.4; font-weight: 400; text-transform: none; letter-spacing: 0; box-shadow: 0 10px 30px rgba(0,0,0,.5); pointer-events: none; }
+.lane { margin-top: 14px; border-radius: 12px; padding: 12px; border: 1px solid var(--line); position: relative; }
+.lane.btc { background: linear-gradient(180deg, rgba(247,147,26,.05), transparent 70%); border-color: rgba(247,147,26,.25); }
+.lane.ark { background: linear-gradient(180deg, rgba(111,50,255,.08), transparent 70%); border-color: rgba(111,50,255,.35); }
+.lane-h { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--fg2); margin-bottom: 10px; }
+.lane-h .lyr { font-weight: 500; color: var(--fg); }
+.lane-h .hint { color: var(--dim); }
+.coins { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; min-height: 76px; }
+.empty { color: var(--dim); font-size: 13px; align-self: center; }
+
+/* the coin: size = amount, violet life ring = time to expiry, green ring + tag = RGB asset on it */
+.coin { position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; background: none; border: 0; padding: 0; cursor: pointer; }
+.coin .disc { width: var(--d); height: var(--d); border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 13px; letter-spacing: -.01em; position: relative; transition: transform .15s var(--ease); }
+.coin.ark .disc { background: radial-gradient(circle at 35% 30%, #8f5cff, #4a1fb3 75%); }
+.coin.btc .disc { background: radial-gradient(circle at 35% 30%, #ffb14d, #c66d06 75%); color: #1a0e00; }
+.coin.ark .disc::before { content: ''; position: absolute; inset: -5px; border-radius: 50%; background: conic-gradient(var(--ark2) calc(var(--life, 1) * 1turn), rgba(255,255,255,.08) 0); -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px)); mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px)); }
+.coin.colored .disc { box-shadow: 0 0 0 3px var(--bg), 0 0 0 6px var(--rgb), 0 0 22px rgba(21,233,154,.35); }
+.coin.colored.ark .disc::before { inset: -10px; }
+.coin.swept .disc { background: repeating-linear-gradient(45deg, #2a2340, #2a2340 6px, #221c33 6px, #221c33 12px); color: var(--dim); }
+.coin.swept .disc::before { display: none; }
+.coin:hover .disc { transform: translateY(-2px); }
+.coin.sel .disc { outline: 2px solid var(--fg); outline-offset: 12px; }
+.coin .tag { font-size: 12px; font-weight: 700; padding: 1px 8px; border-radius: 999px; background: var(--rgb); color: #0D1813; white-space: nowrap; }
+.coin .tag.ghost { background: transparent; color: var(--dim); font-weight: 500; padding: 1px 0; }
+
+.panel { margin-top: 14px; padding: 12px; border-radius: 12px; background: var(--card2); border: 1px solid var(--line); }
+.panel h4 { margin: 0 0 10px; font-size: 14px; font-weight: 500; color: var(--fg2); }
+.panel h4 b { color: var(--fg); }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.row + .row { margin-top: 8px; }
+.why { font-size: 13px; color: var(--dim); }
 
 /* activity */
-#activity { display: flex; flex-direction: column; max-height: calc(100vh - 210px); min-height: 420px; }
-#activity .head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-#activity h3 { margin: 0; font-size: 16px; }
-#log { overflow: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 4px; }
-.ev { border: 1px solid var(--line); border-radius: 12px; background: var(--card2); padding: 9px 11px; }
-.ev.running { border-color: rgba(251,191,36,.45); }
-.ev.error { border-color: rgba(248,113,113,.45); }
-.ev .h { display: flex; align-items: flex-start; gap: 9px; }
-.ev .ic { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; flex: none; margin-top: 1px; }
-.ev.ok .ic { background: rgba(52,211,153,.15); color: var(--ok); } .ev.error .ic { background: rgba(248,113,113,.15); color: var(--err); }
-.ev.running .ic { color: var(--warn); } .ev.note .ic { background: rgba(96,165,250,.12); color: var(--info); }
-.ev .title { font-weight: 600; font-size: 13px; } .ev .msg { color: var(--fg2); font-size: 12.5px; margin-top: 2px; word-break: break-word; }
-.ev .meta { margin-left: auto; color: var(--dim); font-size: 11px; white-space: nowrap; text-align: right; }
-.badges { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
-.badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: rgba(52,211,153,.1); color: #a7f3d0; border: 1px solid rgba(52,211,153,.35); }
-.badge.p { background: rgba(139,92,246,.12); color: #ddd6fe; border-color: rgba(139,92,246,.4); }
-.txs { display: flex; flex-direction: column; gap: 4px; margin-top: 7px; }
-.tx { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--fg2); }
-.tx .k { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hash { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; padding: 2px 7px; border-radius: 7px; background: var(--bg2); border: 1px solid var(--line2); color: var(--fg); cursor: pointer; white-space: nowrap; }
-.hash:hover { border-color: var(--a2); }
-.ev details { margin-top: 6px; } .ev details summary { cursor: pointer; font-size: 11.5px; color: var(--dim); }
-.ev details .ln { font-size: 11.5px; color: var(--fg2); padding: 2px 0 2px 8px; border-left: 2px solid var(--line2); margin: 3px 0; word-break: break-all; }
-.ev details .ln.neg { border-left-color: rgba(52,211,153,.5); }
+#activity { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; max-height: calc(100vh - 150px); position: sticky; top: 76px; }
+@media (max-width: 1280px) { #activity { position: static; max-height: none; } }
+#activity h3 { margin: 0 0 12px; font-size: 17px; font-weight: 700; letter-spacing: -.01em; }
+#log { overflow: auto; display: flex; flex-direction: column; gap: 10px; padding-right: 4px; }
+.ev { border-left: 3px solid var(--line2); padding: 2px 0 4px 12px; }
+.ev.running { border-left-color: var(--warn); } .ev.error { border-left-color: var(--err); }
+.ev.ok.L-ark { border-left-color: var(--ark); } .ev.ok.L-btc { border-left-color: var(--btc); } .ev.ok.L-rgb { border-left-color: var(--rgb); }
+.ev .h { display: flex; gap: 10px; align-items: baseline; }
+.ev .title { font-weight: 700; font-size: 14.5px; flex: 1; min-width: 0; }
+.ev .meta { color: var(--dim); font-size: 12px; white-space: nowrap; }
+.ev .err { color: #fca5a5; font-size: 13px; margin-top: 4px; word-break: break-word; }
+.ev .now { color: var(--fg2); font-size: 13px; margin-top: 3px; display: flex; gap: 8px; align-items: center; }
+.flow { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 2px; margin-top: 8px; }
+.node { display: inline-flex; flex-direction: column; gap: 1px; padding: 5px 9px; border-radius: 8px; font-size: 12.5px; border: 1.5px solid var(--c, var(--line2)); background: color-mix(in srgb, var(--c, #000) 10%, transparent); }
+.node.ark { --c: var(--ark); border-style: dashed; } .node.btc { --c: var(--btc); }
+.node .nl { font-weight: 700; white-space: nowrap; display: flex; align-items: center; gap: 5px; }
+.node .rg { width: 9px; height: 9px; border-radius: 50%; background: var(--rgb); box-shadow: 0 0 6px var(--rgb); }
+.arrow { color: var(--dim); padding: 0 2px; }
+.checks { margin: 8px 0 0; padding: 0; list-style: none; font-size: 13px; color: var(--fg2); display: grid; gap: 2px; }
+.checks li::before { content: '✓'; color: var(--rgb); font-weight: 700; margin-right: 7px; }
+.hash { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; color: var(--dim); cursor: pointer; }
+.hash:hover { color: var(--fg); }
+a.ext { color: var(--dim); text-decoration: none; font-size: 12px; } a.ext:hover { color: var(--rgb); }
+.ev details { margin-top: 6px; } .ev summary { cursor: pointer; color: var(--dim); font-size: 12.5px; }
+.ev details .ln { font-size: 12px; color: var(--fg2); padding: 2px 0 2px 8px; border-left: 2px solid var(--line2); margin: 3px 0; word-break: break-all; }
 
-/* toasts */
+/* learn */
+.learn { max-width: 1180px; margin: 0 auto; padding: 26px 24px 40px; }
+.learn h1 { font-size: 2rem; font-weight: 700; letter-spacing: -.02em; margin: 0 0 6px; }
+.learn .lead { color: var(--fg2); max-width: 68ch; margin: 0 0 22px; font-size: 16px; }
+.paths { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 18px; }
+@media (max-width: 900px) { .paths { grid-template-columns: 1fr 1fr; } }
+.path { text-align: left; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); cursor: pointer; transition: .15s var(--ease); }
+.path b { display: block; font-size: 15px; } .path span { color: var(--dim); font-size: 13px; }
+.path.on { border-color: var(--rgb); background: var(--card2); }
+.stage { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; }
+.stage svg { width: 100%; height: auto; display: block; }
+.stage svg .el { transition: opacity .3s var(--ease); }
+.stage svg .el.hid { opacity: 0; } .stage svg .el.old { opacity: .55; }
+.cap { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items: center; margin-top: 14px; }
+@media (max-width: 700px) { .cap { grid-template-columns: 1fr; } }
+.cap h2 { margin: 0 0 4px; font-size: 1.25rem; font-weight: 700; letter-spacing: -.01em; }
+.cap p { margin: 0; color: var(--fg2); max-width: 72ch; }
+.pager { display: flex; align-items: center; gap: 10px; }
+.pips { display: flex; gap: 6px; } .pips i { width: 8px; height: 8px; border-radius: 50%; background: var(--line2); } .pips i.on { background: var(--rgb); }
+
 #toasts { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 100; }
-.toast { min-width: 260px; max-width: 420px; padding: 10px 14px; border-radius: 12px; background: #141925; border: 1px solid var(--line2); box-shadow: 0 12px 34px rgba(0,0,0,.5); font-size: 13px; animation: in .25s ease-out; }
-.toast.ok { border-color: rgba(52,211,153,.5); } .toast.err { border-color: rgba(248,113,113,.6); }
-.toast b { display: block; margin-bottom: 2px; }
-.toast span { word-break: break-all; }
-@keyframes in { from { transform: translateY(10px); opacity: 0; } }
-footer { color: var(--dim); font-size: 12px; margin-top: 14px; }
-
-/* intro, next action */
-.intro { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; padding: 12px 16px; border-radius: var(--r); background: linear-gradient(90deg, rgba(139,92,246,.14), rgba(34,211,238,.08)); border: 1px solid rgba(139,92,246,.35); }
-.intro > div:first-child { flex: 1 1 520px; color: var(--fg2); } .intro b { color: var(--fg); }
-.intro.off { display: none; }
-.btn.next { border-color: var(--a1); box-shadow: 0 0 0 3px rgba(139,92,246,.25); animation: nudge 1.8s ease-in-out infinite; }
-@keyframes nudge { 50% { box-shadow: 0 0 0 6px rgba(139,92,246,.08); } }
-
-/* what happened: tx flow and offline checks */
-.flow { display: flex; align-items: stretch; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
-.node { display: flex; flex-direction: column; justify-content: center; gap: 2px; padding: 5px 8px; border-radius: 9px; font-size: 11.5px; background: var(--bg2); border: 1px solid var(--line2); min-width: 0; }
-.node.off { border-style: dashed; border-color: rgba(34,211,238,.5); }
-.node.on { border-color: rgba(251,191,36,.45); }
-.node.end { background: rgba(52,211,153,.08); border-color: rgba(52,211,153,.4); }
-.node .nl { font-weight: 600; color: var(--fg); white-space: nowrap; } .node .ns { color: var(--dim); font-size: 10.5px; white-space: nowrap; }
-.opret { font-size: 10px; padding: 0 5px; border-radius: 5px; background: rgba(244,114,182,.15); color: #fbcfe8; margin-left: 4px; }
-.arrow { align-self: center; color: var(--dim); }
-.flow-legend { font-size: 10.5px; color: var(--dim); margin-top: 4px; }
-.checks { margin: 8px 0 0; padding: 0; list-style: none; font-size: 12px; color: var(--fg2); }
-.checks li::before { content: '✓'; color: var(--ok); font-weight: 700; margin-right: 6px; }
-a.ext { color: var(--dim); text-decoration: none; margin-left: 2px; } a.ext:hover { color: var(--a2); }
+.toast { min-width: 240px; max-width: 400px; padding: 10px 14px; border-radius: 10px; background: #141a16; border: 1px solid var(--line2); font-size: 14px; box-shadow: 0 12px 30px rgba(0,0,0,.5); }
+.toast.ok { border-color: rgba(21,233,154,.5); } .toast.err { border-color: rgba(239,68,68,.6); }
+.toast b { display: block; }
+@media (prefers-reduced-motion: reduce) { *, *::before { transition: none !important; animation: none !important; } }
 </style>
 </head>
 <body>
 <header>
-  <div class="brand"><div class="logo"></div><div><b>RGB on Arkade</b><small>KaleidoSwap · regtest prototype</small></div></div>
+  <div class="brand">
+    <svg width="30" height="30" viewBox="0 0 210 210" aria-label="KaleidoSwap"><path d="M69.7141 207.3H0.908203L35.3243 172.936L69.7141 207.3Z" fill="#6F32FF"/><path d="M138.441 0.96106V69.767L104.078 35.3508L138.441 0.96106Z" fill="#17B581"/><path d="M138.415 138.547V207.352L104.051 172.936L138.415 138.547Z" fill="#17B581"/><path d="M138.441 69.7406V0.96106L172.804 35.3772L138.441 69.767V69.7406Z" fill="#17B581"/><path d="M69.6614 138.494V69.6879L104.025 104.104L69.6614 138.494Z" fill="#15E99A"/><path d="M69.6615 69.7142V138.52L35.2981 104.104L69.6615 69.7142Z" fill="#15E99A"/><path d="M138.467 207.379V138.573L172.831 172.989L138.467 207.379Z" fill="#17B581"/><path d="M0.908203 0.908325H69.7141L35.298 35.2718L0.908203 0.908325Z" fill="#6F32FF"/><path d="M207.22 207.3H138.415L172.831 172.936L207.22 207.3Z" fill="#17B581"/><path d="M138.415 0.987427H207.22L172.804 35.3509L138.415 0.987427Z" fill="#17B581"/><path d="M138.467 69.7143H69.6614L104.078 35.3508L138.467 69.7143Z" fill="#17B581"/><path d="M69.635 138.494H138.441L104.025 172.857L69.635 138.494Z" fill="#17B581"/><path d="M138.415 138.494H69.635L104.025 104.157L138.388 138.494H138.415Z" fill="#15E99A"/><path d="M138.415 69.7142L104.051 104.051L69.6614 69.7142H138.441H138.415Z" fill="#15E99A"/></svg>
+    <div><b>RGB on Arkade</b><small>KaleidoSwap prototype · regtest</small></div>
+    <span class="on-ark">built on
+      <svg width="22" height="22" viewBox="0 0 1024 1024" aria-label="Arkade"><rect width="1024" height="1024" rx="200" fill="#351791"/><g fill="#F6F6F6"><rect x="512" y="256" width="128" height="128"/><rect x="384" y="256" width="128" height="128"/><rect x="640" y="384" width="128" height="128"/><rect x="256" y="384" width="128" height="128"/><rect x="384" y="512" width="128" height="128"/><rect x="512" y="512" width="128" height="128"/><rect x="640" y="640" width="128" height="128"/><rect x="256" y="640" width="128" height="128"/><path d="M640 256L768 384H640V256Z"/><path d="M384 256L256 384H384V256Z"/></g></svg>
+      Arkade</span>
+  </div>
+  <nav class="tabs" role="tablist">
+    <button class="on" data-tab="play" onclick="tab('play')">Playground</button>
+    <button data-tab="learn" onclick="tab('learn')">Learn</button>
+  </nav>
   <div class="spacer"></div>
   <span class="chip" id="busy"><span class="dot"></span>idle</span>
-  <span class="chip" id="arkd" data-tip="The Ark operator (arkd, patched for RGB). It only coordinates batches and co-signs; it never holds your assets.">arkd …</span>
   <span class="chip" id="height">block …</span>
+  <span class="chip" id="arkd" title="The Ark operator, patched for RGB. It coordinates batches and co-signs; it never holds your assets.">arkd …</span>
 </header>
-<div class="wrap">
-  <div class="intro" id="intro"><div><b>What is this?</b> Two wallets, Alice and Bob, on a local bitcoin regtest with an Ark operator (arkd). An RGB asset lives on Ark VTXOs: it moves instantly off-chain, and the receiver checks every transfer offline, from a proof and the bitcoin chain, without trusting the operator. Each action below shows which transactions carry the RGB commitment.</div>
-    <div class="row"><button class="btn primary" onclick="hideIntro(); runDemo()">▶ Watch the guided demo</button><button class="btn ghost sm" onclick="hideIntro()">I'll click through myself</button></div></div>
-  <div class="hero">
-    <div class="steps" id="steps"></div>
-    <div class="controls">
-      <h4>Guided demo</h4>
-      <div class="row">
-        <button class="btn primary" id="demoBtn" onclick="runDemo()" data-tip="Runs the main flow end to end on regtest: board both wallets, issue + jump-in, send off-chain both ways, refresh, collaborative exit, on-chain send. About 1 minute.">▶ Demo mode</button>
-        <button class="btn ghost sm" onclick="act({action:'sync'})" data-tip="Re-read balances and VTXO status from the wallets and arkd.">⟳ Refresh view</button>
-        <button class="btn ghost sm danger" onclick="resetAll()" data-tip="Delete the app's data dir (both wallets, proofs, activity) and start with fresh wallets. Regtest only.">⟲ Reset</button>
-      </div>
-      <h4>Regtest time <span class="q" data-tip="Regtest lets us fast-forward time. On mainnet blocks come every ~10 min and batches expire after weeks.">?</span></h4>
-      <div class="row">
-        <button class="btn sm" onclick="act({action:'mine', blocks:+v('mineN')})">Mine</button><input id="mineN" type="number" value="1" min="1" max="500"><span class="dim">blocks</span>
-        <button class="btn sm" id="amBtn" onclick="toggleAutomine()">Auto-mine</button>
-      </div>
-      <div class="row" id="expRow"></div>
+
+<section id="play" class="wrap">
+  <div class="toolbar">
+    <button class="btn cta" id="demoBtn" onclick="runDemo()">▶ Run the guided demo</button>
+    <div class="layers"><span class="lyr btc">Bitcoin</span><span class="lyr ark">Arkade</span><span class="lyr rgb">RGB asset</span></div>
+    <div class="spacer"></div>
+    <div class="regtest">
+      <button class="btn sm" onclick="act({action:'mine', blocks:+v('mineN')})">Mine</button><input id="mineN" type="number" value="1" min="1" max="500" aria-label="blocks to mine"> blocks
+      <button class="btn sm" id="amBtn" onclick="toggleAutomine()">Auto-mine</button>
+      <span id="expRow" class="row"></span>
+      <button class="btn sm danger" onclick="resetAll()">Reset</button>
     </div>
   </div>
-  <div class="demo-banner" id="demoBanner"><span class="spin"></span><b>Demo mode</b><span id="demoText" class="fg2"></span><span class="spacer"></span><button class="btn sm danger" onclick="stopDemo()">Stop after this step</button></div>
-  <main>
-    <section class="card" id="w0"></section>
-    <section class="card" id="w1"></section>
-    <section class="card" id="activity">
-      <div class="head"><h3>Activity</h3><span class="dim" style="font-size:12px">newest first · click a hash to copy</span></div>
-      <div id="log"></div>
-    </section>
-  </main>
-  <footer>Data dir: <span class="mono" id="sdir"></span> · Wallets, proofs and activity are kept here: restarting the app reopens them. Reset starts fresh.</footer>
-</div>
+  <div class="banner" id="demoBanner" hidden><span class="spin"></span><b>Guided demo</b><span id="demoText" class="dim"></span><span class="spacer"></span><button class="btn sm" onclick="stopDemo()">Stop after this step</button></div>
+  <div class="grid">
+    <article class="wallet" id="w0"></article>
+    <article class="wallet" id="w1"></article>
+    <aside id="activity"><h3>What happened</h3><div id="log"></div></aside>
+  </div>
+</section>
+
+<section id="learn" class="learn" hidden>
+  <h1>How an RGB asset lives on Arkade</h1>
+  <p class="lead">Arkade gives bitcoin instant off-chain payments. RGB gives bitcoin private, client-side assets. Here the two meet: the asset rides on an Ark VTXO, moves as fast as Arkade, and every receiver checks it themselves.</p>
+  <div class="paths" id="paths"></div>
+  <div class="stage"><svg id="stageSvg" viewBox="0 0 1000 380" role="img"></svg>
+    <div class="cap"><div><h2 id="capT"></h2><p id="capP"></p></div>
+      <div class="pager"><button class="btn sm" id="prevB" onclick="go(-1)">Back</button><div class="pips" id="pips"></div><button class="btn sm" id="nextB" onclick="go(1)">Next</button></div></div>
+  </div>
+  <p class="lead" style="margin-top:18px">Try each path for real in the <a href="#" onclick="tab('play'); return false" style="color:var(--rgb)">Playground</a>: the guided demo runs all of them in about two minutes.</p>
+</section>
 <div id="toasts"></div>
+
 <script>
 const NAMES = ['alice', 'bob'];
-const STEPS = [
-  { k: 'board', t: 'Board', d: 'Put BTC into Arkade: get a VTXO.', tip: 'A VTXO is a virtual UTXO: a bitcoin output that lives off-chain inside an Ark batch, backed by a pre-signed transaction tree you can always publish.' },
-  { k: 'issue', t: 'Issue + jump-in', d: 'Create an RGB asset and move it onto a VTXO.', tip: 'The asset is issued on-chain with stock RGB, then a normal on-chain RGB transfer (the jump-in) assigns it to a seal on your VTXO.' },
-  { k: 'send', t: 'Send off-chain', d: 'Instant transfer, checked offline.', tip: 'Two Ark transactions carry the RGB commitments. The receiver validates with arkd paused, from the consignment + Ark proof + bitcoin chain only.' },
-  { k: 'refresh', t: 'Refresh', d: 'Roll the VTXO into a new batch.', tip: 'Before a batch expires, the VTXO moves to a new batch. The forfeit transaction carries the RGB transition, so the asset follows.' },
-  { k: 'exit', t: 'Exit', d: 'Leave to bitcoin, with or without arkd.', tip: 'Collaborative exit: arkd pays you on-chain in the next batch. Unilateral exit: you publish your branch yourself; after a timelock the output is yours.' },
-  { k: 'recover', t: 'Sweep recovery', d: 'Offline too long? Asset not lost.', tip: 'If a batch expires while you are offline, arkd sweeps it. When you return, a recovery forfeit brings back both BTC and the RGB asset.' },
-];
-const KIND_TIP = {
-  'vtxo': 'Asset sits on an off-chain VTXO (spendable instantly in Arkade).',
-  'unrolled': 'VTXO published on-chain by a unilateral exit; spendable after the exit timelock.',
-  'exit-output': 'Bitcoin output paid by arkd in a collaborative exit.',
-  'onchain': 'Regular on-chain RGB output.',
-};
-let st = null, busy = null, lastKey = '', demo = null, prevGroups = {}, busySince = null, firstPoll = true;
+let st = null, busy = null, lastKey = '', demo = null, prevGroups = {}, busySince = null, firstPoll = true, NEXT = null;
+const sel = {alice: null, bob: null};
 const v = id => document.getElementById(id).value;
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const short = (s, a = 8, b = 6) => { s = String(s ?? ''); return s.length > a + b + 3 ? s.slice(0, a) + '…' + s.slice(-b) : s; };
 const dur = s => { s = Math.abs(s); return s >= 86400 ? (s/86400).toFixed(1) + ' d' : s >= 3600 ? (s/3600).toFixed(1) + ' h' : s >= 60 ? Math.round(s/60) + ' min' : Math.round(s) + ' s'; };
-const fmtExp = s => s == null ? '' : s < 0 ? 'expired ' + dur(s) + ' ago' : 'expires in ' + dur(s);
-const hhmm = t => new Date(t * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+const hhmm = t => new Date(t * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
 const fmt = n => Number(n ?? 0).toLocaleString('en-US');
+const ksat = n => n >= 1e6 ? (n/1e6).toFixed(n % 1e6 ? 2 : 0) + 'M' : n >= 1000 ? (n/1000).toFixed(n % 1000 ? 1 : 0) + 'k' : String(n);
+const EXPLORER = location.protocol + '//' + location.hostname + ':3000/tx/';
+const txOf = h => (String(h).match(/^[0-9a-f]{64}/) || [])[0];
+const hash = h => `<span class="hash" title="${esc(h)} · click to copy" onclick="copy('${esc(h)}')">${esc(short(h, 6, 4))}</span>${txOf(h) ? ` <a class="ext" href="${EXPLORER}${txOf(h)}" target="_blank" rel="noopener" title="Open in the regtest explorer">↗</a>` : ''}`;
+const exitDelay = () => (st && st.arkd && st.arkd.exit_delay) || 'the exit delay';
 
+function tab(t) {
+  document.getElementById('play').hidden = t !== 'play';
+  document.getElementById('learn').hidden = t !== 'learn';
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
+  try { localStorage.setItem('tab', t); } catch (e) {}
+  if (t === 'learn') drawStory();
+}
 function toast(kind, title, msg) {
   const el = document.createElement('div');
-  el.className = 'toast ' + kind; el.innerHTML = `<b>${esc(title)}</b><span class="fg2">${esc(msg || '')}</span>`;
+  el.className = 'toast ' + kind; el.innerHTML = `<b>${esc(title)}</b><span class="dim">${esc(msg || '')}</span>`;
   document.getElementById('toasts').appendChild(el);
-  setTimeout(() => el.remove(), kind === 'err' ? 9000 : 5000);
+  setTimeout(() => el.remove(), kind === 'err' ? 9000 : 4000);
 }
 function copy(text) {
   const done = () => toast('ok', 'Copied', short(text, 18, 12));
   if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(done);
   else { const t = document.createElement('textarea'); t.value = text; document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove(); done(); }
 }
-const EXPLORER = location.protocol + '//' + location.hostname + ':3000/tx/';
-const txOf = h => (String(h).match(/^[0-9a-f]{64}/) || [])[0];
-const hash = h => `<span class="hash" title="${esc(h)} (click to copy)" onclick="copy('${esc(h)}')">${esc(short(h))}</span>${txOf(h) ? `<a class="ext" href="${EXPLORER}${txOf(h)}" target="_blank" rel="noopener" title="open in the regtest explorer">↗</a>` : ''}`;
-const exitDelay = () => (st && st.arkd && st.arkd.exit_delay) || 'the exit delay';
-let NEXT = null;
-const nx = k => NEXT === k ? ' next' : '';
-function hideIntro() { document.getElementById('intro').classList.add('off'); try { localStorage.setItem('intro-off', '1'); } catch (e) {} }
-
 async function act(body) {
   const r = await fetch('/api/action', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
   const j = await r.json().catch(() => ({}));
@@ -263,18 +259,13 @@ async function act(body) {
   poll();
   return true;
 }
-function resetAll() {
-  if (!confirm('Delete both wallets, their proofs and the activity log, and start fresh?')) return;
-  act({action: 'reset'});
-}
+function resetAll() { if (confirm('Delete both wallets and start fresh?')) act({action: 'reset'}); }
 async function toggleAutomine() {
-  const on = st && st.automine;
-  await fetch('/api/automine', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({seconds: on ? 0 : 10})});
-  toast('ok', on ? 'Auto-mine off' : 'Auto-mine on', on ? '' : 'one block every 10 s');
+  await fetch('/api/automine', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({seconds: st && st.automine ? 0 : 10})});
   poll();
 }
 
-// ---------------------------------------------------------------- activity grouping
+// ---------------------------------------------------------------- activity
 function groups(log) {
   const out = []; let cur = null;
   for (const e of log) {
@@ -291,216 +282,178 @@ function groups(log) {
   }
   return out;
 }
-function stepOf(action) {
-  if (/board BTC/.test(action)) return 'board';
-  if (/issue asset/.test(action)) return 'issue';
-  if (/send .* off-chain/.test(action)) return 'send';
-  if (/refresh in a batch/.test(action)) return 'refresh';
-  if (/exit|on-chain send/.test(action)) return 'exit';
-  if (/sweep recovery/.test(action)) return 'recover';
-  return null;
-}
+const STEPKEYS = [['board', /board BTC/], ['issue', /issue asset/], ['send', /send .* off-chain/], ['refresh', /refresh in a batch/], ['exit', /exit|on-chain send/], ['recover', /sweep recovery/]];
+const stepOf = a => (STEPKEYS.find(([, re]) => re.test(a)) || [null])[0];
 function headline(g) {
-  const a = g.action.replace(' -> ', ' → ');
-  if (/board BTC/.test(a)) return 'Boarded BTC into Arkade';
-  if (/issue asset/.test(a)) return 'Issued an RGB asset and jumped it into Arkade';
-  if (/send .* off-chain/.test(a)) return 'Off-chain RGB transfer · ' + a.replace(/: send (\d+) off-chain/, ' · $1 units');
-  if (/refresh in a batch/.test(a)) return 'Refreshed into a new batch';
-  if (/collaborative exit/.test(a)) return 'Collaborative exit to bitcoin';
-  if (/unilateral exit/.test(a)) return 'Unilateral exit (no operator needed)';
-  if (/on-chain send/.test(a)) return 'On-chain RGB transfer · ' + a.replace(/: on-chain send/, '');
-  if (/sweep recovery/.test(a)) return 'Recovered a swept VTXO, asset included';
-  if (/sweep exited BTC/.test(a)) return 'Claimed exited BTC-only outputs on-chain';
-  if (a === 'reset') return 'Reset: fresh wallets';
-  if (/^mine/.test(a)) return 'Mined blocks';
+  const a = g.action;
+  const amt = (a.match(/send (\d+) off-chain/) || [])[1];
+  if (/board BTC/.test(a)) return `${cap(who(a))} moved bitcoin into Arkade`;
+  if (/issue asset/.test(a)) return `${cap(who(a))} issued an asset and brought it into Arkade`;
+  if (amt) return `${cap(who(a))} sent ${amt} to ${cap(to(a))}, off-chain`;
+  if (/refresh in a batch/.test(a)) return `${cap(who(a))} refreshed into a new batch`;
+  if (/collaborative exit/.test(a)) return `${cap(who(a))} left Arkade with the operator`;
+  if (/unilateral exit/.test(a)) return `${cap(who(a))} left Arkade alone`;
+  if (/on-chain send/.test(a)) return `${cap(who(a))} sent to ${cap(to(a))} on bitcoin`;
+  if (/sweep recovery/.test(a)) return `${cap(who(a))} recovered a swept VTXO`;
+  if (/sweep exited BTC/.test(a)) return `${cap(who(a))} claimed exited bitcoin`;
+  if (a === 'reset') return 'Fresh wallets';
+  if (/^mine/.test(a)) return 'Mined ' + a.replace(/^mine /, '');
   if (/set batch expiry/.test(a)) return 'Batch expiry changed';
-  if (a === 'sync') return 'View refreshed';
-  if (a === 'automine') return 'Auto-mine';
   if (a === 'startup') return 'Wallets ready';
   return a;
 }
-function who(a) { const m = a.match(/^(alice|bob)/); return m ? m[1] : ''; }
+const cap = s => s ? s[0].toUpperCase() + s.slice(1) : '';
+const who = a => (a.match(/^(alice|bob)/) || [])[1] || '';
+const to = a => (a.match(/-> (alice|bob)/) || [])[1] || '';
+const layerOf = a => /board|exit|on-chain send|sweep exited/.test(a) ? 'btc' : /issue|send .* off-chain|refresh|recovery/.test(a) ? 'ark' : '';
 const TXK = [
-  [/checkpoint/i, 'off', 'Checkpoint tx', 'T1 · off-chain', true],
-  [/Arkade tx/i, 'off', 'Arkade tx', 'T2 · off-chain', true],
-  [/forfeit/i, 'off', 'Forfeit tx', 'off-chain · never mined', true],
-  [/commitment/i, 'on', 'Commitment tx', 'batch · on-chain', false],
-  [/exit branch/i, 'on', 'Branch tx', 'published by the owner', false],
-  [/on-chain RGB transfer/i, 'on', 'RGB transfer', 'on-chain', true],
-  [/sweep tx/i, 'on', 'Sweep tx', 'on-chain', false],
+  [/checkpoint/i, 'ark', 'Checkpoint', true], [/Arkade tx/i, 'ark', 'Arkade tx', true], [/forfeit/i, 'ark', 'Forfeit', true],
+  [/commitment/i, 'btc', 'Commitment', false], [/exit branch/i, 'btc', 'Branch', false], [/on-chain RGB transfer/i, 'btc', 'RGB transfer', true], [/sweep tx/i, 'btc', 'Sweep', false],
 ];
-const node = (cls, l, sub, h, opret) => `<div class="node ${cls}"><span class="nl">${esc(l)}${opret ? '<span class="opret" title="carries the RGB commitment (OP_RETURN)">RGB</span>' : ''}</span>${sub ? `<span class="ns">${esc(sub)}</span>` : ''}${h ? `<span>${hash(h)}</span>` : ''}</div>`;
+const node = (lay, label, h, rgb) => `<span class="node ${lay}" ${h ? `title="${esc(h)}"` : ''}><span class="nl">${rgb ? '<i class="rg" title="carries the RGB commitment"></i>' : ''}${esc(label)}</span>${h ? `<span>${hash(h)}</span>` : ''}</span>`;
 function flowHtml(g) {
-  if (g.status !== 'ok') return '';
-  const a = g.action, from = who(a), to = (a.match(/-> (alice|bob)/) || [])[1];
+  const a = g.action, f = cap(who(a)), t = cap(to(a));
   const info = k => { const l = g.lines.find(x => x.startsWith(k + ' = ')); return l ? l.slice(k.length + 3) : null; };
-  let mid = g.txs.map(([k, h]) => { const t = TXK.find(([re]) => re.test(k)); return t ? {t, h} : null; }).filter(Boolean);
-  const branch = mid.filter(m => /Branch/.test(m.t[2]));
-  if (branch.length > 1) mid = [...mid.filter(m => !/Branch/.test(m.t[2])), {t: [null, 'on', `Branch txs ×${branch.length}`, 'published by the owner', false], h: branch[branch.length - 1].h}];
-  mid.sort((x, y) => (/Commitment/.test(x.t[2]) ? 1 : 0) - (/Commitment/.test(y.t[2]) ? 1 : 0));
-  let start, end;
-  if (/issue asset/.test(a)) {
-    const gen = info('genesis_utxo'), t1 = info('jump_in_tx_T1');
-    if (!t1) return '';
-    start = node('on', 'Genesis', 'stock RGB · on-chain', gen); mid = [{t: [null, 'on', 'Jump-in tx', 'on-chain', true], h: t1}]; end = node('end', `${from}'s VTXO`, 'asset in Arkade');
-  } else if (/send .* off-chain/.test(a)) { start = node('', `${from}'s VTXO`); end = node('end', `${to}'s new VTXO`, `+ change back to ${from}`); }
-  else if (/refresh in a batch/.test(a)) { start = node('', `${from}'s VTXO`, 'old batch'); end = node('end', 'New VTXO', 'fresh batch, new expiry'); }
-  else if (/collaborative exit/.test(a)) { start = node('', `${from}'s VTXO`); end = node('end', 'On-chain output', 'paid by the commitment tx'); }
-  else if (/unilateral exit/.test(a)) { start = node('on', 'Batch output', 'on-chain'); end = node('end', 'VTXO on-chain', `spendable after ${exitDelay()}`); }
-  else if (/on-chain send/.test(a)) { start = node('on', `${from}'s exited output`); end = node('end', `${to}'s output`, 'on-chain'); }
-  else if (/sweep recovery/.test(a)) { start = node('', 'Swept VTXO', 'batch expired'); end = node('end', 'New VTXO', 'BTC + asset back'); }
+  let mid = g.txs.map(([k, h]) => { const m = TXK.find(([re]) => re.test(k)); return m ? {lay: m[1], l: m[2], h, rgb: m[3]} : null; }).filter(Boolean);
+  const br = mid.filter(m => m.l === 'Branch');
+  if (br.length > 1) mid = [...mid.filter(m => m.l !== 'Branch'), {lay: 'btc', l: `Branch ×${br.length}`, h: br[br.length - 1].h}];
+  mid.sort((x, y) => (x.l === 'Commitment') - (y.l === 'Commitment'));
+  let s, e;
+  if (/issue asset/.test(a)) { const t1 = info('jump_in_tx_T1'); if (!t1) return ''; s = node('btc', 'Genesis', info('genesis_utxo'), true); mid = [{lay: 'btc', l: 'Jump-in', h: t1, rgb: true}]; e = node('ark', `${f}'s VTXO`); }
+  else if (/send .* off-chain/.test(a)) { s = node('ark', `${f}'s VTXO`); e = node('ark', `${t}'s VTXO`); }
+  else if (/refresh in a batch/.test(a)) { s = node('ark', 'Old VTXO'); e = node('ark', 'New VTXO'); }
+  else if (/collaborative exit/.test(a)) { s = node('ark', `${f}'s VTXO`); e = node('btc', 'Bitcoin output'); }
+  else if (/unilateral exit/.test(a)) { s = node('btc', 'Batch output'); e = node('btc', `VTXO on bitcoin · ${exitDelay()}`); }
+  else if (/on-chain send/.test(a)) { s = node('btc', `${f}'s output`); e = node('btc', `${t}'s output`); }
+  else if (/sweep recovery/.test(a)) { s = node('ark', 'Swept VTXO'); e = node('ark', 'New VTXO'); }
   else return '';
-  const parts = [start, ...mid.map(m => node(m.t[1], m.t[2], m.t[3], m.h, m.t[4])), end];
-  return `<div class="flow">${parts.join('<span class="arrow">→</span>')}</div><div class="flow-legend">dashed = off-chain Ark tx · solid = bitcoin tx · <span class="opret">RGB</span> = carries the RGB commitment</div>`;
+  return `<div class="flow">${[s, ...mid.map(m => node(m.lay, m.l, m.h, m.rgb)), e].join('<span class="arrow">→</span>')}</div>`;
 }
-function checksHtml(g, neg, negOk) {
-  const items = [];
-  if (g.lines.some(l => /arkd PAUSED/.test(l))) items.push('arkd paused while the receiver validates');
-  if (neg.length) items.push(`${negOk}/${neg.length} tampered proofs rejected`);
-  const reg = g.lines.find(l => /registered \d+ Ark witnesses/.test(l));
-  if (reg) items.push(`Ark proof checked against the bitcoin chain only (${reg.match(/registered (\d+)/)[1]} witnesses)`);
-  if (g.lines.some(l => / accepted: |accepted the consignment/.test(l))) items.push('RGB consignment validated and accepted');
+function checksHtml(g) {
+  const items = [], neg = g.lines.filter(l => /^neg_proof/.test(l)), negOk = neg.filter(l => /rejected|= true/.test(l)).length;
+  if (g.lines.some(l => /arkd PAUSED/.test(l))) items.push('Checked with the operator switched off');
+  if (neg.length) items.push(`${negOk} of ${neg.length} forged proofs rejected`);
+  if (g.lines.some(l => /registered \d+ Ark witnesses/.test(l))) items.push('Proof matched against bitcoin only');
+  if (g.lines.some(l => / accepted: |accepted the consignment/.test(l))) items.push('RGB history valid');
+  if (g.lines.some(l => /swept by the operator/.test(l))) items.push('Chain shows the old batch was swept');
   return items.length ? `<ul class="checks">${items.map(i => `<li>${esc(i)}</li>`).join('')}</ul>` : '';
 }
 function evHtml(g) {
-  const icon = g.status === 'ok' ? '✓' : g.status === 'error' ? '!' : g.status === 'note' ? 'i' : '<span class="spin"></span>';
-  const neg = g.lines.filter(l => /^neg_proof/.test(l));
-  const paused = g.lines.some(l => /arkd PAUSED/.test(l));
-  const rest = g.lines.filter(l => !/^neg_proof/.test(l));
-  const negOk = neg.filter(l => /rejected|= true/.test(l)).length;
   const took = g.end ? Math.max(1, g.end - g.t) : (Date.now() / 1000 - g.t);
-  let msg = (g.err ? g.err : g.ok.join(' · ')).replace(/\b[0-9a-f]{64}(:\d+)?/g, m => short(m));
-  if (g.status === 'running') msg = rest.length ? rest[rest.length - 1] : 'working…';
-  const badges = [];
-  if (paused && g.status !== 'ok') badges.push('<span class="badge">validated offline · arkd paused</span>');
-  if (g.lines.some(l => /swept by the operator/.test(l))) badges.push('<span class="badge p">batch was swept · asset recovered</span>');
-  const txs = g.txs.map(([k, h]) => `<div class="tx"><span class="k">${esc(k)}</span>${hash(h)}</div>`).join('');
-  const det = (rest.length || neg.length) ? `<details><summary>Technical details (${rest.length + neg.length})</summary>${rest.map(l => `<div class="ln">${esc(l)}</div>`).join('')}${neg.map(l => `<div class="ln neg">${esc(l)}</div>`).join('')}</details>` : '';
-  const w = who(g.action);
-  return `<div class="ev ${g.status}"><div class="h"><div class="ic">${icon}</div><div style="min-width:0;flex:1">
-    <div class="title">${esc(headline(g))}</div><div class="msg">${esc(short(msg, 220, 0).replace(/…$/, '…'))}</div>
-    ${badges.length ? `<div class="badges">${badges.join('')}</div>` : ''}${g.status === 'ok' ? checksHtml(g, neg, negOk) : ''}${flowHtml(g) || (txs ? `<div class="txs">${txs}</div>` : '')}${det}</div>
-    <div class="meta">${hhmm(g.t)}${w ? '<br>' + w : ''}${g.status !== 'note' ? '<br>' + dur(took) : ''}</div></div></div>`;
+  const lines = [...g.ok, ...g.lines];
+  const body = g.status === 'running' ? `<div class="now"><span class="spin"></span>${esc(short((g.lines[g.lines.length - 1] || 'working…').replace(/\b[0-9a-f]{64}(:\d+)?/g, m => short(m)), 110, 0))}</div>`
+    : g.status === 'error' ? `<div class="err">${esc(g.err)}</div>` : checksHtml(g) + flowHtml(g);
+  const det = lines.length && g.status !== 'note' ? `<details><summary>Details</summary>${lines.map(l => `<div class="ln">${esc(l)}</div>`).join('')}</details>` : '';
+  return `<div class="ev ${g.status} L-${layerOf(g.action)}" data-k="${g.t}${esc(g.action)}"><div class="h"><span class="title">${esc(headline(g))}</span><span class="meta">${hhmm(g.t)}${g.status !== 'note' ? ' · ' + dur(took) : ''}</span></div>${body}${det}</div>`;
 }
 
 // ---------------------------------------------------------------- wallets
-function assetIds(w) { return [...new Set((w.holdings || []).map(h => h.asset_id))]; }
-function holdingsOf(w, kinds) { return (w.holdings || []).filter(h => kinds.includes(h.kind)); }
-function btn(label, body, reason, cls = '', tip = '') {
-  const dis = busy || demo ? 'disabled' : reason ? 'disabled' : '';
-  const why = reason && !busy ? `<span class="why">${esc(reason)}</span>` : '';
-  return `<button class="btn ${cls}" ${dis} ${tip ? `data-tip="${esc(tip)}"` : ''} onclick='act(${JSON.stringify(body).replace(/'/g, '&#39;')})'>${label}</button>${why}`;
+const tickerOf = id => {
+  const all = new Map(); (st.wallets || []).forEach(w => (w.assets || []).forEach(a => all.set(a.asset_id, a.ticker || 'ASSET')));
+  const t = all.get(id) || 'ASSET', twins = [...all.values()].filter(x => x === t).length;
+  return twins > 1 ? `${t}·${id.replace(/^rgb:/, '').slice(0, 4)}` : t;
+};
+function coinsOf(w) {
+  const hold = {}; (w.holdings || []).forEach(h => { (hold[h.outpoint] = hold[h.outpoint] || []).push(h); });
+  const ark = (w.vtxos || []).map(x => {
+    const hs = (hold[x.outpoint] || []).filter(h => h.kind === 'vtxo' && !h.spent);
+    const swept = hs.length ? hs.some(h => h.swept) : x.status !== 'spendable';
+    return {lane: 'ark', op: x.outpoint, sat: x.sat, swept, expired: !swept && x.expires_in < 0, exp: x.expires_in, h: hs[0] || null};
+  });
+  const btc = (w.holdings || []).filter(h => h.kind !== 'vtxo').map(h => ({lane: 'btc', op: h.outpoint, sat: null, h, kind: h.kind, conf: h.confirmations}));
+  (w.exited_btc || []).forEach(x => btc.push({lane: 'btc', op: x.outpoint || x, sat: x.sat || null, h: null, kind: 'exited'}));
+  return {ark, btc};
 }
-function tickerOf(id) { for (const w of (st.wallets || [])) for (const a of (w.assets || [])) if (a.asset_id === id && a.ticker) return a.ticker; return ''; }
+function coinHtml(w, c, maxSat, maxExp) {
+  const d = c.sat ? Math.round(46 + 40 * Math.sqrt(c.sat / maxSat)) : 56;
+  const life = c.lane === 'ark' && c.exp != null && maxExp > 0 ? Math.max(0.04, Math.min(1, c.exp / maxExp)) : 1;
+  const cls = ['coin', c.lane, c.h ? 'colored' : '', c.swept ? 'swept' : '', sel[w.name] === c.op ? 'sel' : ''].join(' ');
+  const amount = c.sat ? ksat(c.sat) : c.h ? '' : '₿';
+  const tip = [c.lane === 'ark' ? 'VTXO in Arkade' : c.kind === 'unrolled' ? 'VTXO published on bitcoin (unilateral exit)' : c.kind === 'exit-output' ? 'Bitcoin output from a collaborative exit' : c.kind === 'exited' ? 'Bitcoin-only output from an exit' : 'Bitcoin output',
+    c.sat ? fmt(c.sat) + ' sat' : '', c.h ? `${fmt(c.h.amount)} ${tickerOf(c.h.asset_id)} on it` : 'no asset',
+    c.swept ? 'swept: recover it' : c.exp != null ? (c.exp < 0 ? 'expired' : 'expires in ' + dur(c.exp)) : c.conf != null ? c.conf + ' confirmations' : '', c.op].filter(Boolean).join(' · ');
+  return `<button class="${cls}" style="--d:${d}px;--life:${life}" title="${esc(tip)}" onclick="pick('${w.name}','${esc(c.op)}')"><span class="disc">${esc(amount)}</span>${c.h ? `<span class="tag">${fmt(c.h.amount)} ${esc(tickerOf(c.h.asset_id))}</span>` : `<span class="tag ghost">${c.swept ? 'swept' : c.expired ? 'expired' : 'bitcoin'}</span>`}</button>`;
+}
+function pick(name, op) { sel[name] = sel[name] === op ? null : op; render(); }
+const dis = () => busy || demo ? 'disabled' : '';
+const ly = s => `<span class="ly">${s.split('').map(c => `<i class="${c}"></i>`).join('')}</span>`;
+const nx = k => NEXT === k ? ' next' : '';
+function actionsHtml(w, i, c) {
+  const other = NAMES[1 - i], O = cap(other);
+  const canIssue = coinsOf(w).ark.some(x => !x.h && !x.swept);
+  const base = `<button class="btn sm${nx('board')}" ${dis()} onclick="act({action:'board', who:'${w.name}', sats:100000})" title="Faucet 100,000 sat and join a batch: a new bitcoin-only VTXO">${ly('ba')}Add bitcoin</button>
+    <button class="btn sm${canIssue ? nx('issue') : ''}" ${canIssue ? dis() : 'disabled'} onclick="act({action:'issue', who:'${w.name}'})" title="${canIssue ? 'Issue 1,000 units of a new RGB asset on bitcoin and move them onto a VTXO' : 'Needs a bitcoin-only VTXO: add bitcoin first'}">${ly('rba')}Issue asset</button>`;
+  if (!c) return `<div class="panel"><h4>${(w.holdings || []).length ? 'Pick a coin to act on it' : 'Start here'}</h4><div class="row">${base}</div></div>`;
+  const H = c.h, A = H ? `asset_id:'${H.asset_id}', outpoint:'${c.op}'` : '';
+  let rows = '';
+  if (c.lane === 'ark' && H && !c.swept) rows = `
+    <div class="row"><button class="btn${nx('send')}" ${dis()} onclick="act({action:'send', from:'${w.name}', to:'${other}', ${A}, amount:+v('amt${i}')})">${ly('ar')}Send to ${O}</button><input id="amt${i}" type="number" min="1" max="${H.amount}" value="${Math.min(300, H.amount)}" aria-label="amount"><span class="why">instant, off-chain</span></div>
+    <div class="row"><button class="btn sm${nx('refresh')}" ${dis()} onclick="act({action:'refresh', who:'${w.name}', ${A}})" title="Roll into a new batch before it expires; the asset follows">${ly('ar')}Refresh</button>
+      <button class="btn sm${nx('exit')}" ${dis()} onclick="act({action:'collab_exit', who:'${w.name}', ${A}})" title="The operator pays you a bitcoin output in the next batch; the asset moves with it">${ly('abr')}Exit with operator</button>
+      <button class="btn sm" ${dis()} onclick="act({action:'unilateral_exit', who:'${w.name}', ${A}})" title="Publish your branch yourself; spendable after ${esc(exitDelay())}">${ly('abr')}Exit alone</button></div>`;
+  else if (c.lane === 'ark' && H && c.swept) rows = `<div class="row"><button class="btn${nx('recover')}" ${dis()} onclick="act({action:'recover', who:'${w.name}', ${A}})">${ly('ar')}Recover bitcoin + asset</button><span class="why">the batch expired while you were away</span></div>`;
+  else if (c.lane === 'btc' && H) rows = `<div class="row"><button class="btn" ${dis()} onclick="act({action:'onchain_send', from:'${w.name}', to:'${other}', ${A}})">${ly('br')}Send to ${O} on bitcoin</button>${c.kind === 'unrolled' ? `<span class="why">waits ${esc(exitDelay())}</span>` : ''}</div>`;
+  else if (c.lane === 'btc' && !H) rows = `<div class="row"><button class="btn" ${dis()} onclick="act({action:'sweep_btc', who:'${w.name}'})">${ly('b')}Claim to wallet</button></div>`;
+  else rows = `<div class="row"><span class="why">Bitcoin-only VTXO: issue an asset onto it.</span></div>`;
+  const what = H ? `<b>${fmt(H.amount)} ${esc(tickerOf(H.asset_id))}</b> on ${c.lane === 'ark' ? 'a VTXO' : 'bitcoin'}${c.sat ? ` · ${fmt(c.sat)} sat` : ''}` : `<b>${c.sat ? fmt(c.sat) + ' sat' : 'Bitcoin'}</b>`;
+  return `<div class="panel"><h4>${what}</h4>${rows}<div class="row" style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">${base}</div></div>`;
+}
 function walletHtml(w, i) {
-  const other = NAMES[1 - i];
-  const b = w.btc || {};
-  const off = (b.offchain_confirmed || 0) + (b.offchain_preconfirmed || 0);
-  const colored = new Set((w.holdings || []).map(h => h.outpoint));
-  const plain = (w.vtxos || []).filter(x => x.status === 'spendable' && !colored.has(x.outpoint));
-  const vt = holdingsOf(w, ['vtxo']);
-  const live = vt.filter(h => !h.swept && !h.spent), swept = vt.filter(h => h.swept);
-  const exited = holdingsOf(w, ['unrolled', 'exit-output']);
-  const ids = assetIds(w);
-  const tick = a => tickerOf(a) || 'asset';
-  const selOpts = list => list.map(h => `<option value="${esc(h.outpoint)}">${fmt(h.amount)} ${esc(tick(h.asset_id))} · ${esc(short(h.outpoint, 6, 4))}</option>`).join('');
-  const sel = (id, list) => list.length ? `<select id="${id}">${selOpts(list)}</select>` : '';
-  const onc = id => (w.holdings || []).filter(h => h.asset_id === id && (h.kind === 'onchain' || h.kind === 'exit-output')).reduce((n, h) => n + h.amount, 0);
+  const b = w.btc || {}, off = (b.offchain_confirmed || 0) + (b.offchain_preconfirmed || 0);
+  const {ark, btc} = coinsOf(w);
+  const all = [...ark, ...btc];
+  if (sel[w.name] && !all.some(c => c.op === sel[w.name])) sel[w.name] = null;
+  if (!sel[w.name]) { const c = ark.find(c => c.h && !c.swept) || ark.find(c => c.h) || btc.find(c => c.h); if (c) sel[w.name] = c.op; }
+  const maxSat = Math.max(1, ...all.map(c => c.sat || 0)), maxExp = Math.max(0, ...ark.map(c => c.exp || 0));
   const assets = (w.assets || []).map(a => {
     const k = a.ark || {active: 0, to_recover: 0, unrolled: 0, in_flight: 0};
-    const tot = (k.active + k.to_recover + k.unrolled + k.in_flight) || 1;
-    const seg = (n, c) => n ? `<i class="${c}" style="width:${100 * n / tot}%"></i>` : '';
-    return `<div class="asset"><div class="top"><span class="ticker">${esc(a.ticker || tickerOf(a.asset_id) || 'ASSET')}</span><span class="mono dim addr" title="${esc(a.asset_id)} (click to copy)" onclick="copy('${esc(a.asset_id)}')">${esc(short(a.asset_id, 14, 6))}</span></div>
-      <div class="bal" style="margin-top:6px"><span class="big">${fmt(k.active)}</span><span class="unit">spendable in Arkade</span>${onc(a.asset_id) ? `<span class="unit" data-tip="Held on bitcoin outputs (after an exit or an on-chain transfer), tracked by this app.">· ${fmt(onc(a.asset_id))} on-chain</span>` : ''}</div>
-      <div class="bar">${seg(k.active, 'c-active')}${seg(k.to_recover, 'c-recover')}${seg(k.unrolled, 'c-unrolled')}${seg(k.in_flight, 'c-flight')}</div>
-      <div class="legend">
-        <span data-tip="On live VTXOs you own: spendable off-chain right now."><em class="c-active"></em>active ${fmt(k.active)}</span>
-        <span data-tip="On VTXOs whose batch expired and was swept by arkd. Not lost: use Recover swept."><em class="c-recover"></em>to recover ${fmt(k.to_recover)}</span>
-        <span data-tip="On VTXOs you published on-chain with a unilateral exit."><em class="c-unrolled"></em>unrolled ${fmt(k.unrolled)}</span>
-        <span data-tip="In a transfer or batch that is not final yet."><em class="c-flight"></em>in flight ${fmt(k.in_flight)}</span>
-      </div>
-      ${a.onchain ? `<div class="stock" data-tip="rgb-lib's stock balance does not know about Ark spends; the bar above is the Ark-aware balance.">stock rgb-lib balance: ${fmt(a.onchain.settled)} (not Ark-aware)</div>` : ''}</div>`;
+    const onc = (w.holdings || []).filter(h => h.asset_id === a.asset_id && h.kind !== 'vtxo').reduce((n, h) => n + h.amount, 0);
+    const parts = [k.to_recover ? fmt(k.to_recover) + ' to recover' : '', onc ? fmt(onc) + ' on bitcoin' : '', k.in_flight ? fmt(k.in_flight) + ' moving' : ''].filter(Boolean);
+    return `<div class="total asset"><b>${fmt(k.active)}</b><span>${esc(tickerOf(a.asset_id))} in Arkade</span>${parts.length ? `<small>${parts.join(', ')}</small>` : ''}</div>`;
   }).join('');
-  const rows = (w.holdings || []).map(h => {
-    const status = h.kind === 'vtxo' ? (h.spent ? 'spent' : h.swept ? '<span class="tag swept">swept · recover</span>' : fmtExp(h.expires_in)) : (h.confirmations != null ? h.confirmations + ' conf' : 'unconfirmed');
-    return `<tr><td><span class="tag ${esc(h.kind)}" data-tip="${esc(KIND_TIP[h.kind] || '')}">${esc(h.kind)}</span></td><td><b>${fmt(h.amount)}</b></td><td>${hash(h.outpoint)}</td><td class="dim">${status}</td></tr>`;
-  }).join('');
-  const vrows = (w.vtxos || []).map(x => `<tr><td>${hash(x.outpoint)}</td><td>${fmt(x.sat)} sat</td><td class="dim">${colored.has(x.outpoint) ? '<span class="tag vtxo">colored</span> ' : ''}${x.status === 'spendable' ? fmtExp(x.expires_in) : '<span class="tag swept">swept</span>'}</td></tr>`).join('');
-  const sendMax = live.length ? Math.max(...live.map(h => h.amount)) : 0;
-  return `
-  <div class="whead"><div class="avatar av-${esc(w.name)}">${esc(w.name[0].toUpperCase())}</div><div style="min-width:0">
-    <h2>${esc(w.name)}</h2><div class="mono dim addr" title="Ark address (click to copy)" onclick="copy('${esc(w.ark_address)}')">${esc(short(w.ark_address, 14, 8))}</div></div></div>
-  <div class="sect"><div class="t">RGB assets <span class="q" data-tip="Ark-aware balance computed by rgb-lib's Ark module from the VTXO status.">?</span></div>
-    ${assets || '<div class="empty">No assets yet. Board BTC, then Issue + jump-in.</div>'}</div>
-  <div class="sect"><div class="t">Bitcoin in Arkade <span class="q" data-tip="Off-chain BTC on VTXOs. Preconfirmed = received off-chain, not yet in a batch; recoverable = swept, claim back by joining a batch.">?</span></div>
-    <div class="bal"><span class="big">${fmt(off)}</span><span class="unit">sat</span><span class="dim" style="font-size:12px">${fmt(b.offchain_confirmed)} settled · ${fmt(b.offchain_preconfirmed)} preconfirmed${b.recoverable ? ' · ' + fmt(b.recoverable) + ' recoverable' : ''}</span></div></div>
-  <div class="sect"><div class="t">Actions</div><div class="acts">
-    <div class="grp">Arkade</div>
-    <div class="act">${btn('Board BTC', {action: 'board', who: w.name, sats: 100000}, '', nx('board'), 'Faucet 100,000 sat to the boarding address and join a batch: you get a BTC-only VTXO.')}</div>
-    <div class="act">${btn('Issue + jump-in', {action: 'issue', who: w.name}, plain.length ? '' : 'needs a BTC-only VTXO: board first', nx('issue'), 'Issue 1,000 units of a new RGB asset on-chain and move them onto one of your VTXOs.')}</div>
-    <div class="act">${live.length ? `<button class="btn primary${nx('send')}" ${busy || demo ? 'disabled' : ''} onclick="sendOff('${w.name}','${other}',${i})" data-tip="Instant off-chain RGB transfer to ${other}. ${other} validates it with arkd paused.">Send off-chain → ${other}</button>${sel('sa' + i, live)}<input id="sn${i}" type="number" value="${Math.min(300, sendMax)}" min="1" max="${sendMax}">` : `<button class="btn" disabled>Send off-chain → ${other}</button><span class="why">needs an asset on a live VTXO</span>`}</div>
-    <div class="act">${live.length ? `${sel('ra' + i, live)}<button class="btn${nx('refresh')}" ${busy || demo ? 'disabled' : ''} onclick="onSel('refresh','${w.name}','ra${i}')" data-tip="Move the colored VTXO into a fresh batch (new expiry). The asset follows via the forfeit tx.">Refresh</button>` : `<button class="btn" disabled>Refresh</button>`}
-      ${swept.length ? `${sel('rc' + i, swept)}<button class="btn primary${nx('recover')}" ${busy || demo ? 'disabled' : ''} onclick="onSel('recover','${w.name}','rc${i}')" data-tip="The batch expired and was swept while you were away. Recover BTC + asset into a new batch.">Recover swept</button>` : `<button class="btn" disabled data-tip="Only for VTXOs swept by arkd after expiry.">Recover swept</button><span class="why">no swept VTXO</span>`}</div>
-    <div class="grp">Exit to bitcoin</div>
-    <div class="act">${live.length ? `${sel('ea' + i, live)}<button class="btn${nx('exit')}" ${busy || demo ? 'disabled' : ''} onclick="onSel('collab_exit','${w.name}','ea${i}')" data-tip="arkd pays you an on-chain output in the next batch; the asset moves with it.">Collaborative exit</button><button class="btn" ${busy || demo ? 'disabled' : ''} onclick="onSel('unilateral_exit','${w.name}','ea${i}')" data-tip="Publish your VTXO branch on-chain yourself. No operator needed; spendable after ${esc(exitDelay())} on this regtest.">Unilateral exit</button>` : `<button class="btn" disabled>Collaborative exit</button><button class="btn" disabled>Unilateral exit</button><span class="why">needs an asset on a live VTXO</span>`}</div>
-    <div class="act">${(w.exited_btc || []).length ? `<button class="btn" ${busy || demo ? 'disabled' : ''} onclick="act({action:'sweep_btc', who:'${w.name}'})" data-tip="A unilateral exit also put ${(w.exited_btc || []).length} BTC-only output(s) of yours on-chain (same branch). Claim them to your on-chain wallet after the exit timelock.">Sweep exited BTC (${(w.exited_btc || []).length})</button>` : `<button class="btn" disabled data-tip="Only after a unilateral exit that also published BTC-only outputs of yours.">Sweep exited BTC</button><span class="why">no exited BTC-only output</span>`}</div>
-    <div class="act">${exited.length ? `${sel('oa' + i, exited)}<button class="btn" ${busy || demo ? 'disabled' : ''} onclick="onSel2('onchain_send','${w.name}','${other}','oa${i}')" data-tip="Spend the exited output to ${other} with an on-chain RGB transfer. After a unilateral exit this waits out the timelock, mining blocks.">Send on-chain → ${other}</button>` : `<button class="btn" disabled>Send on-chain → ${other}</button><span class="why">needs an exited output</span>`}</div>
-  </div></div>
-  <details class="fold sect" ${(w.holdings || []).length ? 'open' : ''}><summary>Colored outputs (${(w.holdings || []).length})</summary>
-    ${rows ? `<table><tr><th>where</th><th>amount</th><th>outpoint</th><th>status</th></tr>${rows}</table>` : '<div class="empty">none</div>'}</details>
-  <details class="fold sect"><summary>VTXOs (${(w.vtxos || []).length}) <span class="q" data-tip="Virtual UTXOs: off-chain bitcoin outputs inside an Ark batch. They expire with their batch unless refreshed.">?</span></summary>
-    ${vrows ? `<table><tr><th>outpoint</th><th>amount</th><th>status</th></tr>${vrows}</table>` : '<div class="empty">none</div>'}</details>`;
+  const c = all.find(x => x.op === sel[w.name]);
+  return `<div class="whead"><div class="avatar av-${esc(w.name)}">${esc(w.name[0].toUpperCase())}</div><div style="min-width:0"><h2>${esc(w.name)}</h2><div class="mono addr" title="Ark address · click to copy" onclick="copy('${esc(w.ark_address)}')">${esc(short(w.ark_address, 12, 6))}</div></div></div>
+    <div class="totals"><div class="total"><b>${fmt(off)}</b><span>sat in Arkade</span></div>${assets}</div>
+    <div class="lane ark"><div class="lane-h"><span class="lyr ark">Arkade</span><span class="hint">VTXOs · ring = time left</span></div><div class="coins">${ark.map(x => coinHtml(w, x, maxSat, maxExp)).join('') || '<span class="empty">No VTXOs yet</span>'}</div></div>
+    <div class="lane btc"><div class="lane-h"><span class="lyr btc">Bitcoin</span><span class="hint">on-chain outputs</span></div><div class="coins">${btc.map(x => coinHtml(w, x, maxSat, maxExp)).join('') || '<span class="empty">Nothing on-chain yet</span>'}</div></div>
+    ${actionsHtml(w, i, c)}`;
 }
-function holding(name, outpoint) { const w = st.wallets.find(x => x.name === name); return (w.holdings || []).find(h => h.outpoint === outpoint) || {}; }
-function sendOff(from, to, i) { const o = v('sa' + i); act({action: 'send', from, to, asset_id: holding(from, o).asset_id, outpoint: o, amount: +v('sn' + i)}); }
-function onSel(action, who, id) { const o = v(id); act({action, who, asset_id: holding(who, o).asset_id, outpoint: o}); }
-function onSel2(action, from, to, id) { const o = v(id); act({action, from, to, asset_id: holding(from, o).asset_id, outpoint: o}); }
 
 // ---------------------------------------------------------------- render
 function render() {
   if (!st) return;
   busy = st.busy;
   const bc = document.getElementById('busy');
-  if (busy) { busySince = busySince || Date.now(); bc.className = 'chip busy-chip'; bc.innerHTML = `<span class="spin"></span>${esc(busy)} · ${dur((Date.now() - busySince) / 1000)}`; }
+  if (busy) { busySince = busySince || Date.now(); bc.className = 'chip busy'; bc.innerHTML = `<span class="spin"></span>${esc(busy)} · ${dur((Date.now() - busySince) / 1000)}`; }
   else { busySince = null; bc.className = 'chip'; bc.innerHTML = '<span class="dot"></span>idle'; }
   document.getElementById('arkd').innerHTML = `<span class="dot"></span>arkd ${esc(st.arkd && st.arkd.version || '?')}`;
-  document.getElementById('height').textContent = 'block ' + fmt(st.height) + (st.automine ? ' · auto-mine ' + st.automine + ' s' : '');
+  document.getElementById('height').textContent = 'block ' + fmt(st.height) + (st.automine ? ' · auto' : '');
   document.getElementById('amBtn').textContent = st.automine ? 'Stop auto-mine' : 'Auto-mine';
+  document.getElementById('demoBtn').disabled = !!(busy || demo);
   const blocks = /blocks/.test(exitDelay()), er = document.getElementById('expRow');
   if (er.dataset.mode !== String(blocks)) {
     er.dataset.mode = String(blocks);
-    er.innerHTML = blocks
-      ? `<button class="btn sm" onclick="act({action:'set_expiry', seconds:+v('exp')})" data-tip="Batch expiry for NEW batches, in blocks on this stack (fast profile: every delay is in blocks, max 511). To watch a sweep and a recovery: refresh a colored VTXO, then mine that many blocks.">Set batch expiry</button><input id="exp" type="number" value="500" min="1" max="511"><span class="dim">blocks</span>`
-      : `<button class="btn sm" onclick="act({action:'set_expiry', seconds:+v('exp')})" data-tip="Batch expiry for NEW batches. Use 600 s to watch a sweep and a recovery in ~15 min; 604672 s (~7 days) is the default.">Set batch expiry</button><input id="exp" type="number" value="604672" min="512"><span class="dim">s</span>`;
+    er.innerHTML = `<button class="btn sm" onclick="act({action:'set_expiry', seconds:+v('exp')})" title="${blocks ? 'Batch expiry for new batches, in blocks (max 511 on this stack). To watch a sweep: refresh, then mine that many blocks.' : 'Batch expiry for new batches. 600 s shows a sweep and a recovery in about 15 min.'}">Batch expiry</button><input id="exp" type="number" value="${blocks ? 500 : 604672}" min="1" aria-label="batch expiry"> ${blocks ? 'blocks' : 's'}`;
   }
-  document.getElementById('sdir').textContent = st.state_dir;
   const gs = groups(st.log);
-  // steps
   const done = new Set(gs.filter(g => g.status === 'ok').map(g => stepOf(g.action)).filter(Boolean));
-  const runningStep = gs.length && gs[gs.length - 1].status === 'running' ? stepOf(gs[gs.length - 1].action) : null;
-  const next = STEPS.find(s => !done.has(s.k));
-  NEXT = busy || demo || runningStep ? null : next && next.k;
-  document.getElementById('steps').innerHTML = STEPS.map((s, i) => `<div class="step ${done.has(s.k) ? 'done' : ''} ${runningStep === s.k ? 'run' : next && next.k === s.k && !runningStep ? 'next' : ''}" data-tip="${esc(s.tip)}">
-    <div><span class="n">${done.has(s.k) ? '✓' : runningStep === s.k ? '…' : i + 1}</span><b>${esc(s.t)}</b></div><p>${esc(s.d)}</p></div>`).join('');
-  // wallets (keep form values and open folds)
-  const keep = {}; document.querySelectorAll('main input, main select').forEach(e => keep[e.id] = e.value);
-  const folds = {}; document.querySelectorAll('main details.fold').forEach((d, k) => folds[k] = d.open);
+  const running = gs.length && gs[gs.length - 1].status === 'running';
+  const next = STEPKEYS.map(([k]) => k).find(k => !done.has(k));
+  NEXT = busy || demo || running ? null : next;
+  const keep = {}; document.querySelectorAll('.wallet input').forEach(e => keep[e.id] = e.value);
   (st.wallets || []).forEach((w, i) => { const el = document.getElementById('w' + i); if (el) el.innerHTML = walletHtml(w, i); });
-  Object.entries(keep).forEach(([id, val]) => { const e = document.getElementById(id); if (e && (!e.options || [...e.options].some(o => o.value === val))) e.value = val; });
-  if (!firstPoll) document.querySelectorAll('main details.fold').forEach((d, k) => { if (k in folds) d.open = folds[k]; });
-  // activity
+  Object.entries(keep).forEach(([id, val]) => { const e = document.getElementById(id); if (e) e.value = val; });
   const key = st.log.length + ':' + (st.log.length ? st.log[st.log.length - 1].t + st.log[st.log.length - 1].msg : '') + (busy ? Math.floor(Date.now() / 5000) : '');
   if (key !== lastKey) {
     lastKey = key;
     const openD = new Set([...document.querySelectorAll('#log details')].filter(d => d.open).map(d => d.closest('.ev').dataset.k));
-    document.getElementById('log').innerHTML = gs.filter(g => !(g.action === 'sync' && g.status === 'ok')).slice(-60).reverse().map(g => evHtml(g).replace('<div class="ev', `<div data-k="${g.t}${esc(g.action)}" class="ev`)).join('') || '<div class="empty">Nothing yet. Start with Board BTC, or press Demo mode.</div>';
+    document.getElementById('log').innerHTML = gs.filter(g => !(['sync', 'automine'].includes(g.action) && g.status !== 'error')).slice(-60).reverse().map(evHtml).join('') || '<div class="empty">Nothing yet. Run the guided demo, or add bitcoin to a wallet.</div>';
     document.querySelectorAll('#log .ev').forEach(e => { if (openD.has(e.dataset.k)) { const d = e.querySelector('details'); if (d) d.open = true; } });
   }
-  // toasts on completion
   for (const g of gs) {
     const k = g.t + g.action;
     if (!firstPoll && prevGroups[k] === 'running' && g.status !== 'running') {
-      if (g.status === 'ok') toast('ok', headline(g), g.ok.join(' · ')); else toast('err', headline(g) + ' failed', g.err);
+      if (g.status === 'ok') toast('ok', headline(g), ''); else toast('err', headline(g) + ' failed', g.err);
     }
     prevGroups[k] = g.status;
   }
@@ -511,16 +464,12 @@ async function poll() {
   catch (e) { const bc = document.getElementById('busy'); bc.className = 'chip'; bc.innerHTML = '<span class="dot off"></span>app unreachable'; }
 }
 
-// ---------------------------------------------------------------- demo mode
+// ---------------------------------------------------------------- guided demo
 async function waitIdle(from) {
   for (;;) {
     await new Promise(r => setTimeout(r, 1500));
     await poll();
-    if (!st.busy) {
-      const tail = st.log.slice(from);
-      const err = tail.find(e => e.kind === 'error');
-      return err ? err.msg : null;
-    }
+    if (!st.busy) { const err = st.log.slice(from).find(e => e.kind === 'error'); return err ? err.msg : null; }
   }
 }
 async function step(label, body) {
@@ -533,34 +482,121 @@ async function step(label, body) {
 function stopDemo() { if (demo) demo.stop = true; document.getElementById('demoText').textContent = 'stopping after this step…'; }
 async function runDemo() {
   if (demo || busy) return;
+  tab('play');
   demo = { stop: false };
-  document.getElementById('demoBanner').classList.add('on'); render();
+  document.getElementById('demoBanner').hidden = false; render();
   let A = null;
   const asset = () => { if (!A) { const h = (st.wallets[0].holdings || []).slice(-1)[0]; A = h && h.asset_id; } return A; };
   const seq = [
-    ['Board alice', () => ({action: 'board', who: 'alice', sats: 100000})],
-    ['Board bob', () => ({action: 'board', who: 'bob', sats: 100000})],
-    ['Issue 1,000 units + jump-in (alice)', () => ({action: 'issue', who: 'alice'})],
-    ['Send 300 off-chain alice → bob', () => ({action: 'send', from: 'alice', to: 'bob', asset_id: asset(), amount: 300})],
-    ['Send 100 back off-chain bob → alice', () => ({action: 'send', from: 'bob', to: 'alice', asset_id: asset(), amount: 100})],
-    ['Refresh bob into a new batch', () => ({action: 'refresh', who: 'bob', asset_id: asset()})],
-    ['Collaborative exit (alice)', () => ({action: 'collab_exit', who: 'alice', asset_id: asset()})],
-    ['On-chain send alice → bob', () => ({action: 'onchain_send', from: 'alice', to: 'bob', asset_id: asset()})],
+    ['Alice adds bitcoin to Arkade', () => ({action: 'board', who: 'alice', sats: 100000})],
+    ['Bob adds bitcoin to Arkade', () => ({action: 'board', who: 'bob', sats: 100000})],
+    ['Alice issues 1,000 units and brings them into Arkade', () => ({action: 'issue', who: 'alice'})],
+    ['Alice sends 300 to Bob, off-chain', () => ({action: 'send', from: 'alice', to: 'bob', asset_id: asset(), amount: 300})],
+    ['Bob sends 100 back, off-chain', () => ({action: 'send', from: 'bob', to: 'alice', asset_id: asset(), amount: 100})],
+    ['Bob refreshes into a new batch', () => ({action: 'refresh', who: 'bob', asset_id: asset()})],
+    ['Alice exits to bitcoin with the operator', () => ({action: 'collab_exit', who: 'alice', asset_id: asset()})],
+    ['Alice sends to Bob on bitcoin', () => ({action: 'onchain_send', from: 'alice', to: 'bob', asset_id: asset()})],
   ];
   if (/blocks/.test(exitDelay())) seq.push(
-    ['Unilateral exit (bob), no operator needed', () => ({action: 'unilateral_exit', who: 'bob', asset_id: asset()})],
-    ['On-chain send bob → alice after the timelock', () => ({action: 'onchain_send', from: 'bob', to: 'alice', asset_id: asset()})]);
+    ['Bob exits alone, no operator needed', () => ({action: 'unilateral_exit', who: 'bob', asset_id: asset()})],
+    ['Bob sends to Alice on bitcoin after the timelock', () => ({action: 'onchain_send', from: 'bob', to: 'alice', asset_id: asset()})]);
   try {
     for (const [i, [label, body]] of seq.entries()) {
       if (demo.stop) { toast('ok', 'Demo stopped', label); break; }
       await step(`${i + 1}/${seq.length} · ${label}`, body());
     }
-    if (!demo.stop) toast('ok', 'Demo complete', 'Try Unilateral exit or Sweep recovery by hand next.');
+    if (!demo.stop) toast('ok', 'Demo complete', 'Now try it yourself: pick a coin.');
   } catch (e) { toast('err', 'Demo stopped', String(e.message || e)); }
-  demo = null; document.getElementById('demoBanner').classList.remove('on'); render();
+  demo = null; document.getElementById('demoBanner').hidden = true; render();
 }
 
-try { if (localStorage.getItem('intro-off')) document.getElementById('intro').classList.add('off'); } catch (e) {}
+// ---------------------------------------------------------------- learn: three lanes, built step by step
+const LANES = {btc: {y: 70, label: 'Bitcoin', c: '#F7931A', sub: 'on-chain'}, ark: {y: 190, label: 'Arkade', c: '#6F32FF', sub: 'off-chain, instant'}, rgb: {y: 310, label: 'RGB', c: '#15E99A', sub: 'client-side'}};
+const STORIES = [
+  { t: 'Bring an asset in', d: 'Board, issue, jump in', steps: [
+    { h: 'Get a VTXO', p: 'Alice deposits bitcoin and receives a VTXO: an output that lives off-chain inside an Ark batch, backed by transactions she can always publish.',
+      el: [{id: 'board', lane: 'btc', x: 250, kind: 'tx', l: 'Boarding tx'}, {id: 'v', lane: 'ark', x: 250, kind: 'coin', l: 'VTXO', s: '100k sat'}, {e: ['board', 'v']}] },
+    { h: 'Issue the asset', p: 'The asset is issued with standard RGB on an ordinary bitcoin output. Only a 32-byte commitment ever appears on-chain.',
+      el: [{id: 'gen', lane: 'btc', x: 520, kind: 'tx', l: 'Genesis', rgb: 1}, {id: 'c0', lane: 'rgb', x: 520, kind: 'doc', l: 'Contract', s: '1,000 ARKT'}, {e: ['gen', 'c0', 1]}] },
+    { h: 'Jump in', p: 'A normal on-chain RGB transfer assigns the asset to a seal on Alice\'s VTXO. From now on the asset travels with that VTXO.',
+      el: [{id: 'jump', lane: 'btc', x: 760, kind: 'tx', l: 'Jump-in tx', rgb: 1}, {e: ['gen', 'jump']}, {id: 'v2', lane: 'ark', x: 760, kind: 'coin', l: 'VTXO', s: '1,000 ARKT', rgb: 1}, {e: ['jump', 'v2']}] },
+    { h: 'History stays with Alice', p: 'Like any RGB asset, its history is kept client-side, in a consignment. Nobody else sees the amounts or the owners.',
+      el: [{id: 'cons', lane: 'rgb', x: 760, kind: 'doc', l: 'Consignment', s: 'Alice keeps it'}, {e: ['v2', 'cons', 1]}] },
+  ]},
+  { t: 'Send instantly', d: 'Two Ark txs, checked offline', steps: [
+    { h: 'Alice holds the asset on a VTXO', p: 'She wants to send 300 to Bob without waiting for a block.',
+      el: [{id: 'va', lane: 'ark', x: 140, kind: 'coin', l: 'Alice', s: '1,000 ARKT', rgb: 1}] },
+    { h: 'Checkpoint tx', p: 'Every Arkade spend starts with a checkpoint tx. It carries the first RGB transition, which closes the seal on Alice\'s VTXO.',
+      el: [{id: 'cp', lane: 'ark', x: 380, kind: 'tx', l: 'Checkpoint', s: 'T1', rgb: 1}, {e: ['va', 'cp']}] },
+    { h: 'Arkade tx', p: 'The Arkade tx carries the second transition: 300 to Bob, 700 back to Alice as change. The operator co-signs and it is final in about a second.',
+      el: [{id: 'at', lane: 'ark', x: 600, kind: 'tx', l: 'Arkade tx', s: 'T2', rgb: 1}, {e: ['cp', 'at']}, {id: 'vb', lane: 'ark', x: 830, kind: 'coin', l: 'Bob', s: '300 ARKT', rgb: 1, dy: -38}, {id: 'vc', lane: 'ark', x: 830, kind: 'coin', l: 'Alice', s: '700 ARKT', rgb: 1, dy: 38}, {e: ['at', 'vb']}, {e: ['at', 'vc']}] },
+    { h: 'Bob checks it himself', p: 'With the operator switched off, Bob validates the RGB history plus a proof that links both Ark txs to a commitment tx mined on bitcoin. Forged proofs are rejected.',
+      el: [{id: 'pr', lane: 'rgb', x: 600, kind: 'doc', l: 'Consignment + proof'}, {id: 'ok', lane: 'rgb', x: 850, kind: 'check', l: 'Valid', s: 'no trust in arkd'}, {id: 'mined', lane: 'btc', x: 380, kind: 'tx', l: 'Commitment tx', s: 'mined'}, {e: ['mined', 'pr', 1]}, {e: ['pr', 'ok']}] },
+  ]},
+  { t: 'Refresh or leave', d: 'Forfeits carry the asset', steps: [
+    { h: 'VTXOs expire', p: 'A VTXO lives as long as its batch. Before it expires, the wallet rolls it into a new batch.',
+      el: [{id: 'old', lane: 'ark', x: 140, kind: 'coin', l: 'VTXO', s: 'expiring', rgb: 1}] },
+    { h: 'Refresh', p: 'The old VTXO is given up with a forfeit tx, which also carries the RGB transition to the new VTXO. The asset follows; the forfeit is never mined.',
+      el: [{id: 'ff', lane: 'ark', x: 380, kind: 'tx', l: 'Forfeit', s: 'never mined', rgb: 1}, {e: ['old', 'ff']}, {id: 'com', lane: 'btc', x: 600, kind: 'tx', l: 'Commitment tx', s: 'new batch'}, {id: 'nv', lane: 'ark', x: 600, kind: 'coin', l: 'New VTXO', rgb: 1}, {e: ['com', 'nv']}, {e: ['ff', 'nv', 1]}] },
+    { h: 'Exit with the operator', p: 'A collaborative exit is the same move, towards a bitcoin output paid by the commitment tx.',
+      el: [{id: 'out', lane: 'btc', x: 850, kind: 'coin', l: 'Output', rgb: 1}, {e: ['com', 'out']}] },
+    { h: 'Exit alone', p: 'If the operator does not cooperate, publish the VTXO\'s branch yourself. After a timelock the output, and the asset on it, are yours on bitcoin.',
+      el: [{id: 'br', lane: 'btc', x: 140, kind: 'tx', l: 'Branch txs', s: 'you publish'}, {e: ['old', 'br', 1]}] },
+  ]},
+  { t: 'Offline for months', d: 'Sweep, then recover', steps: [
+    { h: 'Alice goes offline', p: 'She forgets to refresh. Her VTXO keeps the asset, but its batch is about to expire.',
+      el: [{id: 'v', lane: 'ark', x: 160, kind: 'coin', l: 'VTXO', s: 'expiring', rgb: 1}] },
+    { h: 'The operator sweeps the batch', p: 'After expiry the operator reclaims the batch on bitcoin. The bitcoin can be recovered, and the asset seal cannot move without Alice.',
+      el: [{id: 'sw', lane: 'btc', x: 400, kind: 'tx', l: 'Sweep tx'}, {e: ['v', 'sw', 1]}] },
+    { h: 'Recovery', p: 'Back online, Alice joins a new batch with a recovery forfeit. It carries the RGB transition, so bitcoin and asset come back together.',
+      el: [{id: 'rf', lane: 'ark', x: 620, kind: 'tx', l: 'Recovery forfeit', rgb: 1}, {e: ['v', 'rf']}, {id: 'nv', lane: 'ark', x: 860, kind: 'coin', l: 'New VTXO', rgb: 1}, {e: ['rf', 'nv']}] },
+    { h: 'Receivers check the sweep', p: 'A recovery is accepted only if the bitcoin chain shows the old branch was really swept, so it cannot be used to spend a live VTXO twice.',
+      el: [{id: 'ck', lane: 'rgb', x: 620, kind: 'check', l: 'Sweep proven', s: 'from the chain'}, {e: ['sw', 'ck', 1]}] },
+  ]},
+];
+let story = 0, stepI = 0;
+function drawStory() {
+  const S = STORIES[story];
+  document.getElementById('paths').innerHTML = STORIES.map((s, i) => `<button class="path ${i === story ? 'on' : ''}" onclick="story=${i}; stepI=0; drawStory()"><b>${esc(s.t)}</b><span>${esc(s.d)}</span></button>`).join('');
+  const pos = {}, shapes = [];
+  S.steps.forEach((stp, si) => stp.el.forEach(e => { if (e.id) pos[e.id] = {x: e.x, y: LANES[e.lane].y + (e.dy || 0), e, si}; }));
+  let svg = '<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#9A9A94"/></marker></defs>';
+  for (const [k, L] of Object.entries(LANES)) svg += `<rect x="0" y="${L.y - 52}" width="1000" height="104" rx="14" fill="${L.c}" fill-opacity="${k === 'rgb' ? .05 : .07}" stroke="${L.c}" stroke-opacity=".25"/><text x="16" y="${L.y - 30}" fill="${L.c}" font-size="15" font-weight="700" font-family="Satoshi, system-ui">${L.label}</text><text x="16" y="${L.y - 13}" fill="#9A9A94" font-size="12" font-family="Satoshi, system-ui">${L.sub}</text>`;
+  const cls = si => 'el ' + (si > stepI ? 'hid' : si < stepI ? 'old' : '');
+  S.steps.forEach((stp, si) => stp.el.filter(e => e.e).forEach(e => {
+    const [a, b, dashed] = e.e, A = pos[a], B = pos[b]; if (!A || !B) return;
+    const dx = B.x - A.x, dy = B.y - A.y, len = Math.hypot(dx, dy), r = 46;
+    const x1 = A.x + dx / len * r, y1 = A.y + dy / len * r, x2 = B.x - dx / len * r, y2 = B.y - dy / len * r;
+    svg += `<line class="${cls(si)}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#9A9A94" stroke-width="2" ${dashed ? 'stroke-dasharray="5 5"' : ''} marker-end="url(#ah)"/>`;
+  }));
+  Object.values(pos).forEach(({x, y, e, si}) => {
+    const L = LANES[e.lane], c = cls(si), side = e.dy && e.kind === 'coin', sub = e.s ? `<text x="${side ? x + 44 : x}" y="${side ? y + 4 : y + (e.kind === 'coin' ? 50 : 40)}" text-anchor="${side ? 'start' : 'middle'}" fill="#9A9A94" font-size="12" font-family="Satoshi, system-ui">${esc(e.s)}</text>` : '';
+    const ring = e.rgb ? (e.kind === 'coin' ? `<circle cx="${x}" cy="${y}" r="34" fill="none" stroke="#15E99A" stroke-width="3"/>` : `<circle cx="${x + 62}" cy="${y - 20}" r="7" fill="#15E99A"/>`) : '';
+    let body;
+    if (e.kind === 'coin') body = `<circle cx="${x}" cy="${y}" r="27" fill="${L.c}"/><text x="${x}" y="${y + 4}" text-anchor="middle" fill="${e.lane === 'btc' ? '#1a0e00' : '#fff'}" font-size="11.5" font-weight="700" font-family="Satoshi, system-ui">${esc(e.l)}</text>`;
+    else if (e.kind === 'check') body = `<rect x="${x - 70}" y="${y - 22}" width="140" height="44" rx="22" fill="#15E99A" fill-opacity=".15" stroke="#15E99A" stroke-width="2"/><text x="${x}" y="${y + 5}" text-anchor="middle" fill="#fff" font-size="14" font-weight="700" font-family="Satoshi, system-ui">✓ ${esc(e.l)}</text>`;
+    else if (e.kind === 'doc') body = `<path d="M${x - 76} ${y - 22}h138l14 14v30h-152z" fill="#111110" stroke="#15E99A" stroke-width="2"/><text x="${x}" y="${y + 5}" text-anchor="middle" fill="#fff" font-size="13.5" font-weight="700" font-family="Satoshi, system-ui">${esc(e.l)}</text>`;
+    else body = `<rect x="${x - 70}" y="${y - 22}" width="140" height="44" rx="9" fill="#111110" stroke="${L.c}" stroke-width="2" ${e.lane === 'ark' ? 'stroke-dasharray="6 4"' : ''}/><text x="${x}" y="${y + 5}" text-anchor="middle" fill="#fff" font-size="14" font-weight="700" font-family="Satoshi, system-ui">${esc(e.l)}</text>`;
+    shapes.push(`<g class="${c}">${body}${ring}${sub}</g>`);
+  });
+  document.getElementById('stageSvg').innerHTML = svg + shapes.join('');
+  const cur = S.steps[stepI];
+  document.getElementById('capT').textContent = cur.h;
+  document.getElementById('capP').textContent = cur.p;
+  document.getElementById('pips').innerHTML = S.steps.map((_, i) => `<i class="${i === stepI ? 'on' : ''}"></i>`).join('');
+  document.getElementById('prevB').disabled = stepI === 0 && story === 0;
+  document.getElementById('nextB').textContent = stepI === S.steps.length - 1 ? (story === STORIES.length - 1 ? 'Try it' : 'Next path') : 'Next';
+}
+function go(d) {
+  const S = STORIES[story];
+  stepI += d;
+  if (stepI >= S.steps.length) { if (story === STORIES.length - 1) { stepI = S.steps.length - 1; tab('play'); return; } story++; stepI = 0; }
+  if (stepI < 0) { if (story === 0) stepI = 0; else { story--; stepI = STORIES[story].steps.length - 1; } }
+  drawStory();
+}
+document.addEventListener('keydown', e => { if (document.getElementById('learn').hidden || e.target.tagName === 'INPUT') return; if (e.key === 'ArrowRight') go(1); if (e.key === 'ArrowLeft') go(-1); });
+
+try { if (localStorage.getItem('tab') === 'learn') tab('learn'); } catch (e) {}
 poll(); setInterval(poll, 2000);
 </script>
 </body>
