@@ -48,7 +48,7 @@ RGB binds asset state to single-use seals (outpoints); whoever spends a seal mus
 
 ## Quickstart
 
-Requirements: Linux, docker, Go ≥ 1.23 (arkd build), rustup (the demo pins Rust 1.96.0), node ≥ 20 (arkade-regtest), git, python3, curl. Around 5 GB of disk.
+Requirements: Linux or macOS, docker, Go ≥ 1.26 (arkd build), rustup (the demo pins Rust 1.96.0), node ≥ 20 (arkade-regtest), git, python3, curl. Around 5 GB of disk.
 
 ```bash
 git clone <this repo> rgb-arkade && cd rgb-arkade

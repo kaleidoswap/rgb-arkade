@@ -19,14 +19,17 @@ clone vendor/rgb-lib   https://github.com/kaleidoswap/rgb-lib      8852b2e55606e
 clone arkade-regtest   https://github.com/ArkLabsHQ/arkade-regtest 457b9ef6119bea1b0a8f1356204ef2f1044b0c9b patches/arkade-regtest.patch
 [ -f arkade-regtest/.env ] || cp patches/arkade-regtest.env arkade-regtest/.env
 
-# arkd:rgb image = upstream v0.9.15 image with the patched binary
-( cd vendor/arkd && CGO_ENABLED=0 go build -ldflags="-X 'main.Version=v0.9.15-rgb'" -o "$ROOT/arkd-image/arkd" ./cmd/arkd )
+# arkd:rgb image = upstream v0.9.15 image with the patched binary; both binaries run in linux containers
+# of the docker daemon's architecture (also when the host is macOS)
+export CGO_ENABLED=0 GOOS=linux GOARCH=$(docker version -f '{{.Server.Arch}}')
+( cd vendor/arkd && go build -ldflags="-X 'main.Version=v0.9.15-rgb'" -o "$ROOT/arkd-image/arkd" ./cmd/arkd )
 docker build -t arkd:rgb arkd-image
 
 # fraud-scenario test tool (simulates a colluding operator editing its own DB); built inside the arkd module for its go.sum
 mkdir -p vendor/arkd/cmd/arkdb-sim && cp tools/arkdb-sim/main.go vendor/arkd/cmd/arkdb-sim/
-( cd vendor/arkd && CGO_ENABLED=0 go build -o "$ROOT/tools/arkdb" ./cmd/arkdb-sim )
+( cd vendor/arkd && go build -o "$ROOT/tools/arkdb" ./cmd/arkdb-sim )
 
-# demo (toolchain pinned in demo/rust-toolchain.toml)
+# demo (toolchain pinned in demo/rust-toolchain.toml), native
+unset GOOS GOARCH
 ( cd demo && cargo build )
 echo "setup done; next: make regtest-up (see README, Quickstart)"
