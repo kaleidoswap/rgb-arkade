@@ -183,3 +183,7 @@ Not rerun after the rename: `basic`, `basic-onchain-genesis`, `refresh`, `multi-
 ### Operator co-signature on every witness (28 Oct 2026, CET)
 
 `import_ark_proof` accepted a witness whose inputs were all key-path signed: an on-chain P2TR UTXO spent by a never-mined tx with a well-formed opret, signed by its owner alone (who could sign any number of conflicting ones). Every witness now needs an input whose satisfied leaf contains a pinned operator key. rgb-lib unit test `key_path_only_witness_is_rejected` fails before the fix and passes after; `offchain-transfer --offline-proof` PASS (10:31–10:41), with the new `key_path_witness` case rejected ("no input co-signed by the operator") and every other tampered proof still rejected.
+
+### Fast regtest profile (28 Oct 2026, CET, macOS host)
+
+`make regtest-up-fast` (every arkd delay in blocks: exits 10, boarding 20, expiry 500), then `scripts/run-all.sh quick`: basic, basic-onchain-genesis, offchain-transfer, offchain-transfer `--offline-proof`, refresh, collab-exit, forfeit-negatives, multi-user, failed-batch, fraud and multihop-exit PASS in about 16 min (12:44–13:00, fraud rerun after rebuilding `tools/arkdb` for linux), against about 1 h 30 on the seconds profile. Unilateral exits mature in about 100 s instead of 9 min: `basic` 1 min 32 s (9 min 23 s), `multihop-exit` 1 min 49 s (about 10 min).
