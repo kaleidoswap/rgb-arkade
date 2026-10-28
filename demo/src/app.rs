@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::Ordering;
 use std::collections::HashMap;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::{Arc, Mutex as StdMutex};
 
 const INDEX: &str = include_str!("../app/index.html");
@@ -116,6 +116,8 @@ struct AppState {
 /// Only one action runs at a time across all sessions: actions pause arkd and the electrum
 /// indexer does not cope with concurrent scenario traffic.
 static ACTION_LOCK: StdMutex<()> = StdMutex::new(());
+/// Worker threads still alive, evicted ones included (each holds a runtime and wallets).
+static LIVE_WORKERS: AtomicUsize = AtomicUsize::new(0);
 const COOKIE: &str = "rgbarkade";
 const LOCAL: &str = "local";
 fn env_u64(k: &str, d: u64) -> u64 {
@@ -797,13 +799,15 @@ fn session(app: &AppState, headers: &HeaderMap, create: bool) -> Result<Option<(
     if !create {
         return Ok(None);
     }
-    // Caddy appends the client address to X-Forwarded-For
+    // The app listens on loopback behind Caddy, which appends the client address as the last
+    // X-Forwarded-For entry; IPv6 clients are grouped by /64. No header = a request from the host.
     let ip = headers
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.rsplit(',').next())
-        .map(|v| v.trim().to_string())
-        .unwrap_or_default();
+        .map(|v| v.trim())
+        .map(|v| if v.contains(':') { v.split(':').take(4).collect::<Vec<_>>().join(":") } else { v.to_string() })
+        .unwrap_or_else(|| "host".into());
     let lru = |map: &HashMap<String, Arc<Session>>, ip: Option<&str>| {
         map.iter().filter(|(_, s)| ip.is_none_or(|ip| s.ip == ip)).min_by_key(|(_, s)| s.last_seen.load(Ordering::Relaxed)).map(|(k, _)| k.clone())
     };
@@ -820,10 +824,18 @@ fn session(app: &AppState, headers: &HeaderMap, create: bool) -> Result<Option<(
             map.remove(&k);
         }
     }
-    if map.len() >= env_u64("RGB_ARKADE_MAX_SESSIONS", 40) as usize {
-        if let Some(k) = lru(&map, None) {
-            map.remove(&k);
+    let max = env_u64("RGB_ARKADE_MAX_SESSIONS", 40) as usize;
+    if map.len() >= max {
+        // only a visitor gone for a while makes room for a new one
+        match lru(&map, None) {
+            Some(k) if now().saturating_sub(map[&k].last_seen.load(Ordering::Relaxed)) > 600 => {
+                map.remove(&k);
+            }
+            _ => return Err((StatusCode::SERVICE_UNAVAILABLE, "the demo is full right now, try again in a few minutes".into())),
         }
+    }
+    if LIVE_WORKERS.load(Ordering::Relaxed) >= max + 5 {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "the demo is busy right now, try again in a few minutes".into()));
     }
     let id: String = rand::random::<[u8; 16]>().iter().map(|b| format!("{b:02x}")).collect();
     let s = spawn_session(data_dir().join("sessions").join(&id), true, app.public, app.explorer.clone(), ip);
@@ -1009,7 +1021,17 @@ fn spawn_session(dir: PathBuf, ephemeral: bool, public: bool, explorer: String, 
     let (tx, rx) = std::sync::mpsc::channel::<Action>();
     let (ready_tx, _ready) = tokio::sync::oneshot::channel();
     let sh = shared.clone();
-    std::thread::spawn(move || worker(sh, rx, dir, ephemeral, ready_tx));
+    struct Live;
+    impl Drop for Live {
+        fn drop(&mut self) {
+            LIVE_WORKERS.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+    LIVE_WORKERS.fetch_add(1, Ordering::Relaxed);
+    std::thread::spawn(move || {
+        let _live = Live;
+        worker(sh, rx, dir, ephemeral, ready_tx);
+    });
     Arc::new(Session { jobs: StdMutex::new(tx), shared, last_seen: AtomicU64::new(now()), ip })
 }
 
