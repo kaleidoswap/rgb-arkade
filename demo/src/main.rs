@@ -9,6 +9,7 @@ mod app;
 mod basic;
 mod batch_scenarios;
 mod bench;
+mod checkpoint_renew;
 mod common;
 mod exit_watchtower;
 mod forfeit;
@@ -44,6 +45,7 @@ const SCENARIOS: &[(&str, &str, &str)] = &[
     ("failed-batch", "", "a colored batch fails, the asset is rolled back and the retry succeeds"),
     ("opret-probe", "", "which OP_RETURN outputs (script shape, value) this arkd takes in an Arkade tx; no RGB"),
     ("stock-lane", "", "on STOCK arkd: jump-in to a predicted checkpoint, swap with the commitment in the ark tx only, limits recorded"),
+    ("checkpoint-renew", "", "arkd with only the checkpoint data OP_RETURN: renew an asset onto a fresher VTXO and send it, standard RGB"),
     ("swap", "", "atomic RGB-asset-for-bitcoin swap in one Arkade tx; refusal before signing rolls back"),
     ("multihop-exit", "", "app flows: 2 off-chain hops, collaborative exit of the change, unilateral exit + on-chain send"),
     ("fraud", "", "colluding operator co-signs two forfeits of one VTXO: fraud proof + online detection"),
@@ -91,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
             "fraud" => batch_scenarios::run_fraud().await,
             "multihop-exit" => app::run_multihop_exit().await,
             "swap" => swap::run().await,
+            "checkpoint-renew" => checkpoint_renew::run().await,
             "stock-lane" => stock_lane::run().await,
             "opret-probe" => opret_probe::run().await,
             other => {
