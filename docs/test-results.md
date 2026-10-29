@@ -213,3 +213,18 @@ Found while rebasing, fixed in both patches: on finalizing an off-chain tx arkd 
 | Agreed swap | Bob signs his ark tx input and his checkpoint before the submit; Alice submits, adds Bob's signature to the server-signed checkpoint and finalizes alone (arkd accepts the pre-signed checkpoint). Bob validates with arkd paused: `Fungible(400)`; Alice: active 600, new VTXO 129,000 sat |
 
 PASS in about 30 s (15:16:21–15:16:52).
+
+### Stock arkd lane (29 Oct 2026, CET, Linux host, `REGTEST_PROFILE=stock`: unpatched `arkd v0.9.15`, vtxoMinAmount 1, dust 330)
+
+On stock arkd an RGB opret (`OP_RETURN <32 bytes>`, the only shape RGB accepts) is the sub-dust VTXO format: it must be worth at least vtxoMinAmount and less than dust (code read on v0.9.15 and master f863e48), and checkpoints carry nothing.
+
+| Check | Outcome |
+|---|---|
+| `basic` (jump-in onto the predicted checkpoint, one hop with a 1-sat opret, unilateral exit, on-chain send) | PASS, Carol `settled: 1000` |
+| `stock-lane` swap: Alice's freshly jumped-in asset for Bob's bitcoin in one Arkade tx, commitment only in the ark tx (1-sat opret) | Accepted by stock arkd; Bob checks before signing, signs up front, validates with arkd paused: `Fungible(400)`; Alice's new VTXO 128,999 sat |
+| `swap` (patched lane: 0-sat opret, commitment in the checkpoint) on stock arkd | Rejected: `AMOUNT_TOO_LOW: output #0 amount is lower than min vtxo amount` |
+| Second hop: Bob's checkpoint with a commitment | Rejected: `CHECKPOINT_MISMATCH` |
+| Is the opret output indexed as a VTXO? | Yes: a 1-sat VTXO (marked swept) |
+| arkd restart after these transfers | arkd does not come back: `failed to restore watching vtxos: ... failed to add addresses to group: HTTP 400 invalid-address`, then `server not ready` on every call. Not yet isolated to one opret (the `basic` run left one on the same stack). Report privately upstream before any public mention. |
+
+So on a stock operator an RGB asset can enter Arkade (jump-in) and move once, including as one leg of an atomic swap, then has to leave by unilateral exit before its batch expires; and storing the opret as a VTXO leaves the operator unable to restart.

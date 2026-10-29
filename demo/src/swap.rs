@@ -155,45 +155,29 @@ pub(crate) enum Case {
     SellerShortchanges,
 }
 
-/// The whole swap. Unless both sides do what was agreed, nothing is submitted and the seller
-/// rolls its transitions back.
-pub(crate) async fn atomic_swap(seller: &Side<'_>, buyer: &Side<'_>, t: &Terms, consignment: PathBuf, case: Case) -> anyhow::Result<Option<Swap>> {
-    let short = Terms { asset: t.asset - 100, ..*t };
-    let mut p = prepare(seller, buyer, if case == Case::SellerShortchanges { &short } else { t }, &consignment).await?;
-    let seller_cp = p.checkpoints[0].unsigned_tx.compute_txid();
-    let refused = match case {
-        Case::BuyerWalksAway => Some("walks away".to_string()),
-        _ => buyer_checks(buyer, &p, t, &consignment).err().map(|e| format!("refuses: {e:#}")),
-    };
-    if let Some(why) = refused {
-        println!("[{}] {why}: nothing reaches arkd", buyer.name);
-        for w in [p.ark_txid, seller_cp] {
-            bl(|| seller.rgb.ark_rollback_transfer(seller.online.clone(), w.to_string()))?;
-        }
-        println!("[{}] rolled back T2 {} and T1 {seller_cp}", seller.name, p.ark_txid);
-        return Ok(None);
-    }
-
-    // The buyer signs everything it owns up front (its ark tx input and its checkpoint) and is
-    // done: the seller completes alone, so the buyer holds no option to finish later or not.
-    // Checkpoint signatures do not depend on the server's (taproot, SIGHASH_DEFAULT).
-    buyer.ark.sign_ark_tx_inputs(&mut p.ark_tx, &[1]).map_err(|e| anyhow!("buyer sign: {e:?}"))?;
-    let mut buyer_cp_signed = p.checkpoints[1].clone();
+/// Signing and settlement of a joint Arkade tx (input 0 = seller's checkpoint, 1 = buyer's).
+/// The buyer signs everything it owns up front (its ark tx input and its checkpoint) and is
+/// done: the seller completes alone, so the buyer holds no option to finish later or not.
+/// Checkpoint signatures do not depend on the server's (taproot, SIGHASH_DEFAULT). Returns the
+/// buyer's checkpoint txid.
+pub(crate) async fn complete(seller: &Side<'_>, buyer: &Side<'_>, mut ark_tx: Psbt, checkpoints: Vec<Psbt>, ark_txid: Txid) -> anyhow::Result<Txid> {
+    buyer.ark.sign_ark_tx_inputs(&mut ark_tx, &[1]).map_err(|e| anyhow!("buyer sign: {e:?}"))?;
+    let mut buyer_cp_signed = checkpoints[1].clone();
     if buyer_cp_signed.inputs[0].witness_script.is_none() {
-        buyer_cp_signed.inputs[0].witness_script = p.ark_tx.inputs[1].witness_script.clone();
+        buyer_cp_signed.inputs[0].witness_script = ark_tx.inputs[1].witness_script.clone();
     }
     buyer.ark.sign_checkpoint_tx(&mut buyer_cp_signed).map_err(|e| anyhow!("buyer checkpoint sign: {e:?}"))?;
     ensure!(!buyer_cp_signed.inputs[0].tap_script_sigs.is_empty(), "the buyer could not pre-sign its checkpoint");
     println!("[{}] signed its ark tx input and its checkpoint, hands them over", buyer.name);
 
-    seller.ark.sign_ark_tx_inputs(&mut p.ark_tx, &[0]).map_err(|e| anyhow!("seller sign: {e:?}"))?;
+    seller.ark.sign_ark_tx_inputs(&mut ark_tx, &[0]).map_err(|e| anyhow!("seller sign: {e:?}"))?;
     let res = seller
         .ark
         .network_client()
-        .submit_offchain_transaction_request(p.ark_tx.clone(), p.checkpoints.clone())
+        .submit_offchain_transaction_request(ark_tx, checkpoints)
         .await
         .map_err(|e| anyhow!("submit: {e:?}"))?;
-    ensure!(res.signed_ark_tx.unsigned_tx.compute_txid() == p.ark_txid, "arkd rebuilt a different ark tx");
+    ensure!(res.signed_ark_tx.unsigned_tx.compute_txid() == ark_txid, "arkd rebuilt a different ark tx");
 
     // the server co-signed both checkpoints: the seller signs its own and adds the buyer's
     // signature from before the submit; the buyer takes no part from here on
@@ -211,7 +195,30 @@ pub(crate) async fn atomic_swap(seller: &Side<'_>, buyer: &Side<'_>, t: &Terms, 
             seller.ark.sign_checkpoint_tx(cp).map_err(|e| anyhow!("seller checkpoint sign: {e:?}"))?;
         }
     }
-    seller.ark.finalize_offchain_tx(p.ark_txid, cps).await.map_err(|e| anyhow!("finalize: {e:?}"))?;
+    seller.ark.finalize_offchain_tx(ark_txid, cps).await.map_err(|e| anyhow!("finalize: {e:?}"))?;
+    Ok(buyer_cp)
+}
+
+/// The whole swap. Unless both sides do what was agreed, nothing is submitted and the seller
+/// rolls its transitions back.
+pub(crate) async fn atomic_swap(seller: &Side<'_>, buyer: &Side<'_>, t: &Terms, consignment: PathBuf, case: Case) -> anyhow::Result<Option<Swap>> {
+    let short = Terms { asset: t.asset - 100, ..*t };
+    let p = prepare(seller, buyer, if case == Case::SellerShortchanges { &short } else { t }, &consignment).await?;
+    let seller_cp = p.checkpoints[0].unsigned_tx.compute_txid();
+    let refused = match case {
+        Case::BuyerWalksAway => Some("walks away".to_string()),
+        _ => buyer_checks(buyer, &p, t, &consignment).err().map(|e| format!("refuses: {e:#}")),
+    };
+    if let Some(why) = refused {
+        println!("[{}] {why}: nothing reaches arkd", buyer.name);
+        for w in [p.ark_txid, seller_cp] {
+            bl(|| seller.rgb.ark_rollback_transfer(seller.online.clone(), w.to_string()))?;
+        }
+        println!("[{}] rolled back T2 {} and T1 {seller_cp}", seller.name, p.ark_txid);
+        return Ok(None);
+    }
+
+    let buyer_cp = complete(seller, buyer, p.ark_tx.clone(), p.checkpoints.clone(), p.ark_txid).await?;
     println!(
         "[swap] final: seller VTXO {} sat -> {} sat + asset change, buyer VTXO {} sat -> asset carrier {} sat + change",
         p.seller_vtxo_sat,

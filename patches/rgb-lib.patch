@@ -1,9 +1,9 @@
 diff --git a/src/ark_proof.rs b/src/ark_proof.rs
 new file mode 100644
-index 0000000..58577c6
+index 0000000..20f8d14
 --- /dev/null
 +++ b/src/ark_proof.rs
-@@ -0,0 +1,688 @@
+@@ -0,0 +1,690 @@
 +//! [rgb-arkade] Self-contained Ark proofs for unmined RGB witnesses.
 +//!
 +//! A proof (`*.arkproof.json`, sidecar of a consignment) lists the RGB witness txids that are
@@ -25,7 +25,7 @@ index 0000000..58577c6
 +//! - in strict mode the satisfied tapleaf must contain a pinned operator key (signer/forfeit key), so a
 +//!   user-only leaf (e.g. the CSV exit leaf) cannot fake an operator-acknowledged spend;
 +//! - every listed witness has at least one such operator leaf: key-path signatures alone do not count;
-+//! - every listed witness has exactly one OP_RETURN: index 0, 0 sat, `OP_RETURN PUSH32`.
++//! - every listed witness has exactly one OP_RETURN: index 0, below dust (0 sat, or sub-dust on stock arkd), `OP_RETURN PUSH32`.
 +//!
 +//! The anchor of a witness is its highest mined ancestor (the most recent batch commitment).
 +use super::*;
@@ -247,11 +247,13 @@ index 0000000..58577c6
 +    let oprets = tx.output.iter().filter(|o| o.script_pubkey.is_op_return()).count();
 +    let o0 = tx.output.first().ok_or("no outputs")?;
 +    let b = o0.script_pubkey.as_bytes();
-+    if oprets != 1 || !o0.script_pubkey.is_op_return() || o0.value.to_sat() != 0 || b.len() != 34
++    // 0 sat on an arkd that takes it as data; stock arkd only accepts this script shape as a
++    // sub-dust output, so any value below the dust limit is fine too
++    if oprets != 1 || !o0.script_pubkey.is_op_return() || o0.value.to_sat() >= 330 || b.len() != 34
 +        || b[1] != 0x20
 +    {
 +        return Err(format!(
-+            "witness {} lacks a single 0-sat OP_RETURN<32B> at index 0",
++            "witness {} lacks a single sub-dust OP_RETURN<32B> at index 0",
 +            tx.compute_txid()
 +        ));
 +    }
