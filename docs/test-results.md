@@ -228,3 +228,20 @@ On stock arkd an RGB opret (`OP_RETURN <32 bytes>`, the only shape RGB accepts) 
 | arkd restart after these transfers | arkd does not come back: `failed to restore watching vtxos: ... failed to add addresses to group: HTTP 400 invalid-address`, then `server not ready` on every call. Not yet isolated to one opret (the `basic` run left one on the same stack). Report privately upstream before any public mention. |
 
 So on a stock operator an RGB asset can enter Arkade (jump-in) and move once, including as one leg of an atomic swap, then has to leave by unilateral exit before its batch expires; and storing the opret as a VTXO leaves the operator unable to restart.
+
+### One arkd change: checkpoint data OP_RETURN (29 Oct 2026, scenario `checkpoint-renew`)
+
+arkd master `f863e48` plus only the checkpoint commit (image `arkd:rgb-cponly`, profile `cponly`, branch `rgb-checkpoint-opret` of the arkd fork): no forfeit change, no 0-sat OP_RETURN change. Standard RGB (rgb-consensus 0.11.1-rc.11 from crates.io). The commitment sits in the checkpoint, the tx that spends the VTXO, so every transfer is plain RGB; the new seal is a VTXO the receiver already holds (like an RGB invoice on an existing UTXO), so nothing depends on the ark tx.
+
+| Check | Outcome |
+|---|---|
+| Asset issued on-chain and moved onto Alice's VTXO V (batch 1) | Validated |
+| Alice holds G, Bob holds H, both from a batch 240 blocks later | Expire after V |
+| Renew: one Arkade tx, the checkpoint of V commits V → G | Accepted |
+| Batch 1 past its tree expiry (+270 blocks) | The bitcoin left on it is swept by arkd |
+| Send: the checkpoint of G commits G → H | Accepted |
+| Bob validates before the checkpoints are attested (negative) | Rejected |
+| Bob validates offline (arkd paused): consignment + Ark proof (2 checkpoints) | `1000` received on H |
+| arkd restart with these checkpoints stored | Serves again within 90 s |
+
+So with this single opt-in change an RGB asset can move any number of times and live past its batch without the forfeit: the owner (or a delegate) renews it onto a fresher VTXO before expiry. A colored VTXO must still never be settled in a batch.
