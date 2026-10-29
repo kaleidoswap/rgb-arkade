@@ -201,3 +201,15 @@ rgb-lib marks a wallet UTXO spent only when it broadcasts the spending tx, so af
 arkd master `f863e48` (v0.9.16 + the btcd v2 migration) with only three changes: data `OP_RETURN` in the checkpoint (with the checkpoint output at vout 1), the same in the forfeit, and a 0-sat `OP_RETURN <32 bytes>` taken as data instead of a sub-dust VTXO. `forfeit-cosign` is dropped (master #1110 signs forfeits at collection time), and so are `subdust-restart-fix` and `recovery-forfeit`. Image `arkd:rgb-master` on `arkd:v0.9.16`, `arkd-wallet:v0.9.16`, fast profile: the quick suite passes, 11 of 11 (`forfeit-negatives` after making its positive control use a fresh wallet: master bans a VTXO after repeated invalid forfeits). `multihop-exit` passes, so the operator broadcasts its stored forfeit without our co-sign patch. Not run on master: `sweep-recovery` (needs `recovery-forfeit`) and the other time-scaled scenarios.
 
 Found while rebasing, fixed in both patches: on finalizing an off-chain tx arkd watched `TxOut[0]` of each checkpoint, which is the data `OP_RETURN` when present; the wallet rejected the script, so that checkpoint went unwatched until the next restart.
+
+### Atomic swap in one Arkade tx (29 Oct 2026, CET, Linux host, fast profile)
+
+`swap`: Alice holds 1000 units on a VTXO (100,000 sat), Bob a bitcoin-only VTXO (100,000 sat). One Arkade tx spends both: checkpoint(Alice) carries T1, checkpoint(Bob) nothing, the ark tx carries T2 and pays [OP_RETURN, Bob 1,000 sat + 400 units, Alice 129,000 sat + 600 units, Bob 70,000 sat]. arkd accepts an off-chain tx whose inputs belong to two owners.
+
+| Case | Outcome |
+|---|---|
+| Bob walks away after Alice prepared T1/T2 | Nothing submitted; Alice rolls T2 and T1 back and holds 1000 on her VTXO again |
+| Alice's T2 gives Bob 300 instead of 400 | Bob's check before signing (`validate_consignment_offchain` over the unsigned txs) refuses; Alice rolls back |
+| Agreed swap | Bob signs his ark tx input and his checkpoint before the submit; Alice submits, adds Bob's signature to the server-signed checkpoint and finalizes alone (arkd accepts the pre-signed checkpoint). Bob validates with arkd paused: `Fungible(400)`; Alice: active 600, new VTXO 129,000 sat |
+
+PASS in about 30 s (15:16:21–15:16:52).
