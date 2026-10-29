@@ -32,6 +32,7 @@ pub(crate) struct Side<'a> {
     pub(crate) vtxo: OutPoint,
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct Terms {
     pub(crate) contract_id: ContractId,
     /// asset units the buyer gets; the rest stays with the seller (asset change)
@@ -145,24 +146,47 @@ fn buyer_checks(buyer: &Side<'_>, p: &Prepared, t: &Terms, consignment: &PathBuf
     Ok(())
 }
 
-/// The whole swap. With `buyer_refuses`, the buyer walks away after the seller prepared its side:
-/// nothing is submitted and the seller rolls its transitions back.
-pub(crate) async fn atomic_swap(seller: &Side<'_>, buyer: &Side<'_>, t: &Terms, consignment: PathBuf, buyer_refuses: bool) -> anyhow::Result<Option<Swap>> {
-    let mut p = prepare(seller, buyer, t, &consignment).await?;
+#[derive(PartialEq)]
+pub(crate) enum Case {
+    Agreed,
+    /// the buyer walks away after the seller prepared its side
+    BuyerWalksAway,
+    /// the seller's transition gives the buyer 100 units less than agreed
+    SellerShortchanges,
+}
+
+/// The whole swap. Unless both sides do what was agreed, nothing is submitted and the seller
+/// rolls its transitions back.
+pub(crate) async fn atomic_swap(seller: &Side<'_>, buyer: &Side<'_>, t: &Terms, consignment: PathBuf, case: Case) -> anyhow::Result<Option<Swap>> {
+    let short = Terms { asset: t.asset - 100, ..*t };
+    let mut p = prepare(seller, buyer, if case == Case::SellerShortchanges { &short } else { t }, &consignment).await?;
     let seller_cp = p.checkpoints[0].unsigned_tx.compute_txid();
-    if buyer_refuses {
-        println!("[{}] refuses to sign: nothing reaches arkd", buyer.name);
+    let refused = match case {
+        Case::BuyerWalksAway => Some("walks away".to_string()),
+        _ => buyer_checks(buyer, &p, t, &consignment).err().map(|e| format!("refuses: {e:#}")),
+    };
+    if let Some(why) = refused {
+        println!("[{}] {why}: nothing reaches arkd", buyer.name);
         for w in [p.ark_txid, seller_cp] {
             bl(|| seller.rgb.ark_rollback_transfer(seller.online.clone(), w.to_string()))?;
         }
         println!("[{}] rolled back T2 {} and T1 {seller_cp}", seller.name, p.ark_txid);
         return Ok(None);
     }
-    buyer_checks(buyer, &p, t, &consignment)?;
 
-    // each party signs only its own ark tx input (0 = seller's checkpoint, 1 = buyer's)
-    seller.ark.sign_ark_tx_inputs(&mut p.ark_tx, &[0]).map_err(|e| anyhow!("seller sign: {e:?}"))?;
+    // The buyer signs everything it owns up front (its ark tx input and its checkpoint) and is
+    // done: the seller completes alone, so the buyer holds no option to finish later or not.
+    // Checkpoint signatures do not depend on the server's (taproot, SIGHASH_DEFAULT).
     buyer.ark.sign_ark_tx_inputs(&mut p.ark_tx, &[1]).map_err(|e| anyhow!("buyer sign: {e:?}"))?;
+    let mut buyer_cp_signed = p.checkpoints[1].clone();
+    if buyer_cp_signed.inputs[0].witness_script.is_none() {
+        buyer_cp_signed.inputs[0].witness_script = p.ark_tx.inputs[1].witness_script.clone();
+    }
+    buyer.ark.sign_checkpoint_tx(&mut buyer_cp_signed).map_err(|e| anyhow!("buyer checkpoint sign: {e:?}"))?;
+    ensure!(!buyer_cp_signed.inputs[0].tap_script_sigs.is_empty(), "the buyer could not pre-sign its checkpoint");
+    println!("[{}] signed its ark tx input and its checkpoint, hands them over", buyer.name);
+
+    seller.ark.sign_ark_tx_inputs(&mut p.ark_tx, &[0]).map_err(|e| anyhow!("seller sign: {e:?}"))?;
     let res = seller
         .ark
         .network_client()
@@ -171,17 +195,21 @@ pub(crate) async fn atomic_swap(seller: &Side<'_>, buyer: &Side<'_>, t: &Terms, 
         .map_err(|e| anyhow!("submit: {e:?}"))?;
     ensure!(res.signed_ark_tx.unsigned_tx.compute_txid() == p.ark_txid, "arkd rebuilt a different ark tx");
 
-    // the server co-signed both checkpoints; each owner counter-signs its own
+    // the server co-signed both checkpoints: the seller signs its own and adds the buyer's
+    // signature from before the submit; the buyer takes no part from here on
     let mut cps = res.signed_checkpoint_txs;
-    let buyer_cp = cps.iter().map(|c| c.unsigned_tx.compute_txid()).find(|c| *c != seller_cp).ok_or_else(|| anyhow!("no buyer checkpoint"))?;
+    let buyer_cp = buyer_cp_signed.unsigned_tx.compute_txid();
     for cp in cps.iter_mut() {
         let txid = cp.unsigned_tx.compute_txid();
         let idx = res.signed_ark_tx.unsigned_tx.input.iter().position(|i| i.previous_output.txid == txid).ok_or_else(|| anyhow!("checkpoint {txid} not spent by the ark tx"))?;
         if cp.inputs[0].witness_script.is_none() {
             cp.inputs[0].witness_script = res.signed_ark_tx.inputs[idx].witness_script.clone();
         }
-        let owner = if txid == seller_cp { seller } else { buyer };
-        owner.ark.sign_checkpoint_tx(cp).map_err(|e| anyhow!("{} checkpoint sign: {e:?}", owner.name))?;
+        if txid == buyer_cp {
+            cp.inputs[0].tap_script_sigs.extend(buyer_cp_signed.inputs[0].tap_script_sigs.clone());
+        } else {
+            seller.ark.sign_checkpoint_tx(cp).map_err(|e| anyhow!("seller checkpoint sign: {e:?}"))?;
+        }
     }
     seller.ark.finalize_offchain_tx(p.ark_txid, cps).await.map_err(|e| anyhow!("finalize: {e:?}"))?;
     println!(
@@ -243,15 +271,17 @@ pub async fn run() -> anyhow::Result<()> {
     let seller = Side { name: "alice", ark: &alice, rgb: &alice_rgb, online: &alice_online, vtxo: av };
     let buyer = Side { name: "bob", ark: &bob, rgb: &bob_rgb, online: &bob_online, vtxo: bv };
 
-    step("3. negative: Bob walks away after Alice prepared her side");
-    let none = atomic_swap(&seller, &buyer, &terms(7001), state.join("refused.rgbc"), true).await?;
-    ensure!(none.is_none(), "refused swap returned a result");
-    let left = asset_on(&alice_rgb, &alice_online, &contract_id, av)?;
-    rec("alice_asset_after_rollback", left.to_string());
-    ensure!(left == ISSUE_AMOUNT, "after the rollback Alice holds {left} on {av}, expected {ISSUE_AMOUNT}");
+    for (i, (case, label)) in [(Case::BuyerWalksAway, "Bob walks away after Alice prepared her side"), (Case::SellerShortchanges, "Alice's transition gives Bob 300 instead of 400")].into_iter().enumerate() {
+        step(&format!("3{}. negative: {label}", ["a", "b"][i]));
+        let none = atomic_swap(&seller, &buyer, &terms(7001 + i as u64), state.join(format!("refused-{i}.rgbc")), case).await?;
+        ensure!(none.is_none(), "refused swap returned a result");
+        let left = asset_on(&alice_rgb, &alice_online, &contract_id, av)?;
+        rec(&format!("alice_asset_after_rollback_{i}"), left.to_string());
+        ensure!(left == ISSUE_AMOUNT, "after the rollback Alice holds {left} on {av}, expected {ISSUE_AMOUNT}");
+    }
 
-    step("4. the swap: 400 units for 30,000 sat in one Arkade tx");
-    let s = atomic_swap(&seller, &buyer, &terms(7002), state.join("swap.rgbc"), false).await?.ok_or_else(|| anyhow!("swap did not run"))?;
+    step("4. the swap: 400 units for 30,000 sat in one Arkade tx, Bob signs up front");
+    let s = atomic_swap(&seller, &buyer, &terms(7009), state.join("swap.rgbc"), Case::Agreed).await?.ok_or_else(|| anyhow!("swap did not run"))?;
     rec("seller_checkpoint", s.seller_checkpoint.to_string());
     rec("buyer_checkpoint", s.buyer_checkpoint.to_string());
     rec("ark_txid", s.ark_txid.to_string());
