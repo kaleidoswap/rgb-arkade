@@ -113,13 +113,21 @@ pub(crate) async fn build_proof(
             Some(p) => p.clone(),
             None => {
                 // a commitment tx is not a virtual tx: arkd returns it as raw hex, not a PSBT
-                let found = match client.network_client().get_virtual_txs(vec![t.to_string()], None, None).await {
-                    Ok(r) => r.txs.into_iter().find(|p| p.unsigned_tx.compute_txid() == t),
-                    Err(e) => {
-                        println!("[proof] GetVirtualTxs({t}) not a virtual tx: {e:?}");
-                        None
+                // a witness finalized a moment ago may not be indexed yet: retry those briefly
+                let mut found = None;
+                for _ in 0..if unmined.contains(&t) { 10 } else { 1 } {
+                    found = match client.network_client().get_virtual_txs(vec![t.to_string()], None, None).await {
+                        Ok(r) => r.txs.into_iter().find(|p| p.unsigned_tx.compute_txid() == t),
+                        Err(e) => {
+                            println!("[proof] GetVirtualTxs({t}) not a virtual tx: {e:?}");
+                            None
+                        }
+                    };
+                    if found.is_some() {
+                        break;
                     }
-                };
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
                 match found {
                     Some(p) => p,
                     None => {
