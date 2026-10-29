@@ -168,6 +168,8 @@ enum Action {
     Issue { who: String },
     // `outpoint` (optional) picks which colored output to use when a wallet holds several
     Send { from: String, to: String, asset_id: String, amount: u64, sats: Option<u64>, outpoint: Option<String> },
+    /// `seller` gives `amount` units for `price` sat of `buyer`, in one Arkade tx (scenario `swap`)
+    Swap { seller: String, buyer: String, asset_id: String, amount: u64, price: u64, outpoint: Option<String> },
     Refresh { who: String, asset_id: String, outpoint: Option<String> },
     CollabExit { who: String, asset_id: String, outpoint: Option<String> },
     UnilateralExit { who: String, asset_id: String, outpoint: Option<String> },
@@ -188,6 +190,7 @@ impl Action {
             Action::Board { who, .. } => format!("{who}: board BTC"),
             Action::Issue { who } => format!("{who}: issue asset + jump-in"),
             Action::Send { from, to, amount, .. } => format!("{from} -> {to}: send {amount} off-chain"),
+            Action::Swap { seller, buyer, amount, price, .. } => format!("{seller} -> {buyer}: swap {amount} for {price} sat"),
             Action::Refresh { who, .. } => format!("{who}: refresh in a batch"),
             Action::CollabExit { who, .. } => format!("{who}: collaborative exit"),
             Action::UnilateralExit { who, .. } => format!("{who}: unilateral exit"),
@@ -446,6 +449,96 @@ async fn run_action(c: &mut Core, a: &Action, lg: &Logger) -> anyhow::Result<()>
                 }
                 t.holdings.push(Holding { asset_id: asset_id.clone(), amount, kind: "vtxo".into(), outpoint: vt.to_string(), proof: ps });
                 lg.push("ok", format!("{to} received {amount} off-chain on VTXO {vt}"));
+                Ok(())
+            }
+            .await;
+            if let Err(e) = res {
+                if f.holdings.iter().all(|x| x.outpoint != h.outpoint) && !matches!(vtxo_info(OutPoint::from_str(&h.outpoint)?).await, Some(ref i) if i.is_spent) {
+                    f.holdings.push(h);
+                }
+                return Err(e);
+            }
+        }
+        Action::Swap { seller, buyer, asset_id, amount, price, outpoint } => {
+            let (si, bi) = (idx(&seller)?, idx(&buyer)?);
+            let (f, t) = two_mut(&mut c.wallets, si, bi)?;
+            let h = take_holding(f, &asset_id, &["vtxo"], &outpoint)?;
+            let res: anyhow::Result<()> = async {
+                ensure!(amount > 0 && amount <= h.amount, "amount must be 1..={}", h.amount);
+                let cid = ContractId::from_str(&asset_id).map_err(|e| anyhow!("{e}"))?;
+                let v = OutPoint::from_str(&h.outpoint)?;
+                // the buyer pays from a bitcoin-only VTXO that covers the price
+                let colored: Vec<String> = t.holdings.iter().map(|x| x.outpoint.clone()).collect();
+                let bv = t
+                    .ark
+                    .list_vtxos_filtered(GetVtxosRequestFilter::Spendable)
+                    .await?
+                    .spendable_offchain()
+                    .map(|x| x.vtxo().clone())
+                    .filter(|x| !colored.contains(&x.outpoint.to_string()) && x.amount.to_sat() >= price)
+                    .max_by_key(|x| x.amount)
+                    .map(|x| x.outpoint)
+                    .ok_or_else(|| anyhow!("{buyer} has no bitcoin-only VTXO worth {price} sat: add bitcoin first"))?;
+                // an asset that already moved off-chain carries its Ark proof: the buyer imports it
+                // first, so it can check the new transition on top of that history before signing
+                let carried: Vec<PathBuf> = h.proof.iter().map(PathBuf::from).collect();
+                for p in &carried {
+                    import(&t.rgb, &t.online, p, &ops)?;
+                }
+                let terms = crate::swap::Terms {
+                    contract_id: cid,
+                    asset: amount,
+                    price,
+                    carrier: 1_000,
+                    blinding_buyer: blinding(),
+                    blinding_change: blinding(),
+                    blinding_cp: blinding(),
+                };
+                let cons = state.join(format!("{seq}-{seller}-swap-{buyer}.rgbc"));
+                lg.info(format!("one Arkade tx spends {seller}'s asset VTXO {v} and {buyer}'s bitcoin VTXO {bv}"));
+                let sw = {
+                    let s_side = crate::swap::Side { name: &seller, ark: &f.ark, rgb: &f.rgb, online: &f.online, vtxo: v };
+                    let b_side = crate::swap::Side { name: &buyer, ark: &t.ark, rgb: &t.rgb, online: &t.online, vtxo: bv };
+                    crate::swap::atomic_swap(&s_side, &b_side, &terms, cons.clone(), crate::swap::Case::Agreed).await?
+                }
+                .ok_or_else(|| anyhow!("the swap did not happen"))?;
+                lg.info(format!("{buyer} checked {amount} units on the unsigned txs before signing, then signed its side up front; {seller} completed alone"));
+                lg.tx("checkpoint tx (T1)", sw.seller_checkpoint);
+                lg.tx("checkpoint tx (buyer)", sw.buyer_checkpoint);
+                lg.tx("Arkade tx (T2)", sw.ark_txid);
+                let vt = OutPoint { txid: sw.ark_txid, vout: 1 };
+                let vc = OutPoint { txid: sw.ark_txid, vout: 2 };
+                wait_vtxo(&t.ark, vt, &buyer).await?;
+                let mut ws = carried_witnesses(&carried)?;
+                ws.extend([sw.seller_checkpoint, sw.ark_txid]);
+                let p = proof_path(&cons);
+                build_proof(&f.ark, &regtest, &ws, &carried, &p).await?;
+                let change = h.amount - amount;
+                let mut tracked = vec![vt];
+                if change > 0 {
+                    tracked.push(vc);
+                }
+                add_vtxos(&f.ark, &regtest, &p, &tracked).await?;
+                {
+                    let mut rec = lg.rec();
+                    let _down = arkd_down(&mut rec, &buyer)?;
+                    lg.info(format!("arkd PAUSED: {buyer} validates from consignment + Ark proof + bitcoin chain only"));
+                    let neg = negatives(&buyer, &t.rgb, &t.online, &p, &ops, &mut rec)?;
+                    ensure!(neg, "a tampered proof was accepted");
+                    let reg = import(&t.rgb, &t.online, &p, &ops)?;
+                    lg.info(format!("{buyer} registered {} Ark witnesses", reg.len()));
+                    let (_, assign) = bl(|| t.rgb.accept_transfer_consignment_offchain(t.online.clone(), cons.clone(), vec![], sw.ark_txid.to_string(), 1, terms.blinding_buyer))?;
+                    lg.info(format!("{buyer} accepted: {assign:?}"));
+                }
+                lg.info("arkd unpaused");
+                import(&f.rgb, &f.online, &p, &ops)?;
+                let ps = Some(p.display().to_string());
+                if change > 0 {
+                    own(&f.rgb, vc)?;
+                    f.holdings.push(Holding { asset_id: asset_id.clone(), amount: change, kind: "vtxo".into(), outpoint: vc.to_string(), proof: ps.clone() });
+                }
+                t.holdings.push(Holding { asset_id: asset_id.clone(), amount, kind: "vtxo".into(), outpoint: vt.to_string(), proof: ps });
+                lg.push("ok", format!("{buyer} got {amount} units, {seller} got {price} sat, in Arkade tx {}", sw.ark_txid));
                 Ok(())
             }
             .await;

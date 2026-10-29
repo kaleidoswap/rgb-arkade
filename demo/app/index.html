@@ -176,7 +176,7 @@ a.ext { color: var(--dim); text-decoration: none; font-size: 12px; } a.ext:hover
 .learn { max-width: 1180px; margin: 0 auto; padding: 26px 24px 40px; }
 .learn h1 { font-size: 2rem; font-weight: 700; letter-spacing: -.02em; margin: 0 0 6px; }
 .learn .lead { color: var(--fg2); max-width: 68ch; margin: 0 0 22px; font-size: 16px; }
-.paths { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 18px; }
+.paths { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 18px; }
 @media (max-width: 900px) { .paths { grid-template-columns: 1fr 1fr; } }
 .path { text-align: left; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); cursor: pointer; transition: .15s var(--ease); }
 .path b { display: block; font-size: 15px; } .path span { color: var(--dim); font-size: 13px; }
@@ -368,7 +368,7 @@ function groups(log) {
   }
   return out;
 }
-const STEPKEYS = [['board', /board BTC/], ['issue', /issue asset/], ['send', /send .* off-chain/], ['refresh', /refresh in a batch/], ['exit', /exit|on-chain send/], ['recover', /sweep recovery/]];
+const STEPKEYS = [['board', /board BTC/], ['issue', /issue asset/], ['send', /send .* off-chain/], ['swap', /swap \d+ for/], ['refresh', /refresh in a batch/], ['exit', /exit|on-chain send/], ['recover', /sweep recovery/]];
 const stepOf = a => (STEPKEYS.find(([, re]) => re.test(a)) || [null])[0];
 function headline(g) {
   const a = g.action;
@@ -376,6 +376,8 @@ function headline(g) {
   if (/board BTC/.test(a)) return `${cap(who(a))} moved bitcoin into Arkade`;
   if (/issue asset/.test(a)) return `${cap(who(a))} issued an asset and brought it into Arkade`;
   if (amt) return `${cap(who(a))} sent ${amt} to ${cap(to(a))}, off-chain`;
+  const sw = a.match(/swap (\d+) for (\d+) sat/);
+  if (sw) return `${cap(who(a))} sold ${sw[1]} to ${cap(to(a))} for ${fmt(sw[2])} sat, in one Arkade tx`;
   if (/refresh in a batch/.test(a)) return `${cap(who(a))} refreshed into a new batch`;
   if (/collaborative exit/.test(a)) return `${cap(who(a))} left Arkade with the operator`;
   if (/unilateral exit/.test(a)) return `${cap(who(a))} left Arkade alone`;
@@ -391,7 +393,7 @@ function headline(g) {
 const cap = s => s ? s[0].toUpperCase() + s.slice(1) : '';
 const who = a => (a.match(/^(alice|bob)/) || [])[1] || '';
 const to = a => (a.match(/-> (alice|bob)/) || [])[1] || '';
-const layerOf = a => /board|exit|on-chain send|sweep exited/.test(a) ? 'btc' : /issue|send .* off-chain|refresh|recovery/.test(a) ? 'ark' : '';
+const layerOf = a => /board|exit|on-chain send|sweep exited/.test(a) ? 'btc' : /issue|send .* off-chain|swap|refresh|recovery/.test(a) ? 'ark' : '';
 const TXK = [
   [/checkpoint/i, 'ark', 'Checkpoint', true], [/Arkade tx/i, 'ark', 'Arkade tx', true], [/forfeit/i, 'ark', 'Forfeit', true],
   [/commitment/i, 'btc', 'Commitment', false], [/exit branch/i, 'btc', 'Branch', false], [/on-chain RGB transfer/i, 'btc', 'RGB transfer', true], [/sweep tx/i, 'btc', 'Sweep', false],
@@ -407,6 +409,13 @@ function flowHtml(g) {
   let s, e;
   if (/issue asset/.test(a)) { const t1 = info('jump_in_tx_T1'); if (!t1) return ''; s = node('btc', 'Genesis', info('genesis_utxo'), true); mid = [{lay: 'btc', l: 'Jump-in', h: t1, rgb: true}]; e = node('ark', `${f}'s VTXO`); }
   else if (/send .* off-chain/.test(a)) { s = node('ark', `${f}'s VTXO`); e = node('ark', `${t}'s VTXO`); }
+  else if (/swap \d+ for/.test(a)) {
+    const cps = g.txs.filter(([k]) => /checkpoint/i.test(k)), at = g.txs.find(([k]) => /Arkade tx/i.test(k));
+    if (!at) return '';
+    s = node('ark', `${f}'s asset VTXO + ${t}'s bitcoin VTXO`);
+    mid = cps.map(([k, h]) => ({lay: 'ark', l: /T1/.test(k) ? `${f}'s checkpoint` : `${t}'s checkpoint`, h, rgb: /T1/.test(k)})).concat([{lay: 'ark', l: 'One Arkade tx', h: at[1], rgb: true}]);
+    e = node('ark', `${t}: the asset · ${f}: the sats`);
+  }
   else if (/refresh in a batch/.test(a)) { s = node('ark', 'Old VTXO'); e = node('ark', 'New VTXO'); }
   else if (/collaborative exit/.test(a)) { s = node('ark', `${f}'s VTXO`); e = node('btc', 'Bitcoin output'); }
   else if (/unilateral exit/.test(a)) { s = node('btc', 'Batch output'); e = node('btc', `VTXO on bitcoin · ${exitDelay()}`); }
@@ -417,6 +426,7 @@ function flowHtml(g) {
 }
 function checksHtml(g) {
   const items = [], neg = g.lines.filter(l => /^neg_proof/.test(l)), negOk = neg.filter(l => /rejected|= true/.test(l)).length;
+  if (g.lines.some(l => /before signing/.test(l))) items.push('Buyer checked the asset before signing, then signed its side up front');
   if (g.lines.some(l => /arkd PAUSED/.test(l))) items.push('Checked with the operator switched off');
   if (neg.length) items.push(`${negOk} of ${neg.length} forged proofs rejected`);
   if (g.lines.some(l => /registered \d+ Ark witnesses/.test(l))) items.push('Proof matched against bitcoin only');
@@ -476,6 +486,7 @@ function actionsHtml(w, i, c) {
   let rows = '';
   if (c.lane === 'ark' && H && !c.swept) rows = `
     <div class="row"><button class="btn${nx('send')}" ${dis()} onclick="act({action:'send', from:'${w.name}', to:'${other}', ${A}, amount:+v('amt${i}')})">${ly('ar')}Send to ${O}</button><input id="amt${i}" type="number" min="1" max="${H.amount}" value="${Math.min(300, H.amount)}" aria-label="amount"><span class="why">instant, off-chain</span></div>
+    <div class="row"><button class="btn${nx('swap')}" ${dis()} onclick="act({action:'swap', seller:'${w.name}', buyer:'${other}', ${A}, amount:+v('sw${i}'), price:+v('sp${i}')})" title="${O} pays in sat for these units, in the same Arkade tx: both happen or neither">${ly('ar')}Sell to ${O}</button><input id="sw${i}" type="number" min="1" max="${H.amount}" value="${Math.min(200, H.amount)}" aria-label="units to sell"><span class="why">for</span><input id="sp${i}" type="number" min="1" value="20000" aria-label="price in sat"><span class="why">sat, atomic</span></div>
     <div class="row"><button class="btn sm${nx('refresh')}" ${dis()} onclick="act({action:'refresh', who:'${w.name}', ${A}})" title="Roll into a new batch before it expires; the asset follows">${ly('ar')}Refresh</button>
       <button class="btn sm${nx('exit')}" ${dis()} onclick="act({action:'collab_exit', who:'${w.name}', ${A}})" title="The operator pays you a bitcoin output in the next batch; the asset moves with it">${ly('abr')}Exit with operator</button>
       <button class="btn sm" ${dis()} onclick="act({action:'unilateral_exit', who:'${w.name}', ${A}})" title="Publish your branch yourself; spendable after ${esc(exitDelay())}">${ly('abr')}Exit alone</button></div>`;
@@ -624,6 +635,7 @@ async function runDemo() {
     while (!(st.wallets || []).length || st.busy) { await new Promise(r => setTimeout(r, 1500)); await poll(); drawNarr(); }
   }
   let A = null;
+  const biggest = (who, id) => { const hs = (st.wallets.find(w => w.name === who).holdings || []).filter(h => h.kind === 'vtxo' && h.asset_id === id); return hs.length ? hs.reduce((a, b) => b.amount > a.amount ? b : a).outpoint : null; };
   const asset = () => { if (!A) { const h = (st.wallets[0].holdings || []).slice(-1)[0]; A = h && h.asset_id; } return A; };
   const seq = [
     ['alice', 'Alice adds bitcoin to Arkade', 'She deposits 100,000 sat and gets a VTXO: bitcoin that can move off-chain, instantly.', () => ({action: 'board', who: 'alice', sats: 100000})],
@@ -631,6 +643,7 @@ async function runDemo() {
     ['alice', 'Alice creates a token and brings it into Arkade', 'She issues 1,000 units of a test token with RGB on bitcoin, then moves them onto her VTXO. Watch the green ring appear.', () => ({action: 'issue', who: 'alice'})],
     ['bob', 'Alice sends 300 to Bob, off-chain', 'Two Arkade transactions carry the transfer, final in about a second. Bob checks it with the operator switched off.', () => ({action: 'send', from: 'alice', to: 'bob', asset_id: asset(), amount: 300})],
     ['alice', 'Bob sends 100 back', 'Transfers chain: Bob spends the token he just received, again off-chain.', () => ({action: 'send', from: 'bob', to: 'alice', asset_id: asset(), amount: 100})],
+    ['bob', 'Alice sells 200 to Bob for 20,000 sat', 'One Arkade tx carries both sides: Bob gets the tokens and Alice the bitcoin, or nothing happens. Bob checks the tokens before he signs.', () => ({action: 'swap', seller: 'alice', buyer: 'bob', asset_id: asset(), amount: 200, price: 20000, outpoint: biggest('alice', asset())})],
     ['bob', 'Bob refreshes his VTXO', 'VTXOs expire with their batch, so wallets roll them into a new one. The token follows.', () => ({action: 'refresh', who: 'bob', asset_id: asset()})],
     ['alice', 'Alice takes her tokens back to bitcoin', 'A collaborative exit: the operator pays her a normal bitcoin output, and the tokens move onto it.', () => ({action: 'collab_exit', who: 'alice', asset_id: asset()})],
     ['bob', 'Alice sends to Bob on bitcoin', 'From there it is an ordinary RGB transfer on bitcoin, mined in a block.', () => ({action: 'onchain_send', from: 'alice', to: 'bob', asset_id: asset()})],
@@ -673,6 +686,16 @@ const STORIES = [
       el: [{id: 'at', lane: 'ark', x: 600, kind: 'tx', l: 'Arkade tx', s: 'T2', rgb: 1}, {e: ['cp', 'at']}, {id: 'vb', lane: 'ark', x: 830, kind: 'coin', l: 'Bob', s: '300 ARKT', rgb: 1, dy: -38}, {id: 'vc', lane: 'ark', x: 830, kind: 'coin', l: 'Alice', s: '700 ARKT', rgb: 1, dy: 38}, {e: ['at', 'vb']}, {e: ['at', 'vc']}] },
     { h: 'Bob checks it himself', p: 'With the operator switched off, Bob validates the RGB history plus a proof that links both Ark txs to a commitment tx mined on bitcoin. Forged proofs are rejected.',
       el: [{id: 'pr', lane: 'rgb', x: 600, kind: 'doc', l: 'Consignment + proof'}, {id: 'ok', lane: 'rgb', x: 850, kind: 'check', l: 'Valid', s: 'no trust in arkd'}, {id: 'mined', lane: 'btc', x: 380, kind: 'tx', l: 'Commitment tx', s: 'mined'}, {e: ['mined', 'pr', 1]}, {e: ['pr', 'ok']}] },
+  ]},
+  { t: 'Swap in one tx', d: 'Asset for bitcoin, atomic', steps: [
+    { h: 'Two owners, one deal', p: 'Alice has the asset on a VTXO, Bob has bitcoin on his. They agree: 200 units for 20,000 sat.',
+      el: [{id: 'a', lane: 'ark', x: 175, kind: 'coin', l: 'Alice', s: 'asset', rgb: 1, dy: -38}, {id: 'b', lane: 'ark', x: 175, kind: 'coin', l: 'Bob', s: 'sats', dy: 38}] },
+    { h: 'Both VTXOs go into the same tx', p: 'Each VTXO goes through its own checkpoint. Alice\'s carries the first RGB transition; Bob\'s carries nothing.',
+      el: [{id: 'ca', lane: 'ark', x: 390, kind: 'tx', l: 'Checkpoint', s: 'Alice · T1', rgb: 1, dy: -38}, {id: 'cb', lane: 'ark', x: 390, kind: 'tx', l: 'Checkpoint', s: 'Bob', dy: 38}, {e: ['a', 'ca']}, {e: ['b', 'cb']}] },
+    { h: 'One Arkade tx pays both', p: 'The Arkade tx spends both checkpoints: the asset to Bob, the sats to Alice. It is one transaction, so both legs happen or neither does.',
+      el: [{id: 'at', lane: 'ark', x: 620, kind: 'tx', l: 'Arkade tx', s: 'T2', rgb: 1}, {e: ['ca', 'at']}, {e: ['cb', 'at']}, {id: 'nb', lane: 'ark', x: 850, kind: 'coin', l: 'Bob', s: '200 units', rgb: 1, dy: -38}, {id: 'na', lane: 'ark', x: 850, kind: 'coin', l: 'Alice', s: '+20,000 sat', dy: 38}, {e: ['at', 'nb']}, {e: ['at', 'na']}] },
+    { h: 'Bob checks before he signs', p: 'Before signing, Bob validates the RGB transition on the still-unsigned txs. He signs his whole side up front, so he cannot wait and back out later; Alice completes the swap.',
+      el: [{id: 'ck', lane: 'rgb', x: 620, kind: 'check', l: 'Checked', s: 'before signing'}, {e: ['at', 'ck', 1]}] },
   ]},
   { t: 'Refresh or leave', d: 'Forfeits carry the asset', steps: [
     { h: 'VTXOs expire', p: 'A VTXO lives as long as its batch. Before it expires, the wallet rolls it into a new batch.',
