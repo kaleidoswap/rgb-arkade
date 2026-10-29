@@ -917,7 +917,7 @@ index fb204cf..5a9ebc9 100644
              if asset_schema == AssetSchema::Ifa {
                  let contract_id = valid_consignment.contract_id();
 diff --git a/src/wallet/rust_only.rs b/src/wallet/rust_only.rs
-index 11d45e5..e16ad6f 100644
+index 11d45e5..d34a70b 100644
 --- a/src/wallet/rust_only.rs
 +++ b/src/wallet/rust_only.rs
 @@ -4,6 +4,15 @@
@@ -936,7 +936,7 @@ index 11d45e5..e16ad6f 100644
  /// RGB asset-specific information to color a transaction
  #[derive(Debug, Clone)]
  pub struct AssetColoringInfo {
-@@ -407,6 +416,746 @@ impl Wallet {
+@@ -407,6 +416,794 @@ impl Wallet {
          ))
      }
  
@@ -1306,6 +1306,54 @@ index 11d45e5..e16ad6f 100644
 +        self.ark_set_vtxo_owned(format!("{txid}:{vout}"), true)?;
 +        info!(self.logger(), "Accept offchain-chain transfer completed");
 +        Ok((consignment, received.into_values().collect()))
++    }
++
++    /// [rgb-arkade: swaps] Validate, without accepting anything, a consignment whose last
++    /// witnesses are `offchain_txids` (resolved from the consignment as Tentative, so they may be
++    /// unsigned: a swap counterparty checks what it gets before signing its side), and return the
++    /// assignments it puts on `vout` of witness `txid`.
++    #[cfg(any(feature = "electrum", feature = "esplora"))]
++    pub fn validate_consignment_offchain(
++        &self,
++        online: Online,
++        consignment_path: PathBuf,
++        offchain_txids: Vec<String>,
++        txid: String,
++        vout: u32,
++    ) -> Result<Vec<Assignment>, Error> {
++        self.check_online(online)?;
++        let witness_id = RgbTxid::from_str(&txid).map_err(|_| Error::InvalidTxid)?;
++        let mut offchain_witnesses = HashSet::new();
++        for t in &offchain_txids {
++            offchain_witnesses.insert(RgbTxid::from_str(t).map_err(|_| Error::InvalidTxid)?);
++        }
++        let consignment =
++            RgbTransfer::load_file(&consignment_path).map_err(|_| Error::InvalidFilePath {
++                file_path: consignment_path.to_string_lossy().to_string(),
++            })?;
++        let asset_schema: AssetSchema = consignment.schema_id().try_into()?;
++        self.check_schema_support(&asset_schema)?;
++        let bundled: HashMap<RgbTxid, BdkTransaction> = consignment
++            .bundled_witnesses()
++            .filter(|bw| offchain_witnesses.contains(&bw.witness_id()))
++            .filter_map(|bw| bw.pub_witness.tx().cloned().map(|tx| (bw.witness_id(), tx)))
++            .collect();
++        let validation_config = ValidationConfig {
++            chain_net: self.chain_net(),
++            trusted_typesystem: asset_schema.types(),
++            ..Default::default()
++        };
++        match consignment.clone().validate(&self.ark_aware_resolver(bundled), &validation_config) {
++            Ok(_) => {}
++            Err(ValidationError::InvalidConsignment(e)) => {
++                error!(self.logger(), "Consignment is invalid: {}", e);
++                return Err(Error::InvalidConsignment);
++            }
++            Err(ValidationError::ResolverError(e)) => {
++                return Err(Error::Network { details: e.to_string() });
++            }
++        }
++        Ok(self.extract_received_assignments(&consignment, witness_id, Some(vout), None).into_values().collect())
 +    }
 +
 +    /// [rgb-arkade] Validate a consignment file without accepting it, either with the
@@ -1683,7 +1731,7 @@ index 11d45e5..e16ad6f 100644
      /// Consume an RGB fascia.
      ///
      /// <div class="warning">This method is meant for special usage and is normally not needed, use
-@@ -449,8 +1198,9 @@ impl Wallet {
+@@ -449,8 +1246,9 @@ impl Wallet {
      ) -> Result<UpdateRes, Error> {
          info!(self.logger(), "Updating witnesses...");
          self.check_online(online)?;

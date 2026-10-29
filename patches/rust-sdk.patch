@@ -321,10 +321,31 @@ index bb30951..8955dd2 100644
  pub use boltz::BoltzVhtlcWatcherHandle;
  pub use boltz::ChainSwapAmount;
 diff --git a/ark-client/src/send_vtxo.rs b/ark-client/src/send_vtxo.rs
-index 65009bb..5193101 100644
+index 65009bb..563b8dd 100644
 --- a/ark-client/src/send_vtxo.rs
 +++ b/ark-client/src/send_vtxo.rs
-@@ -369,7 +369,7 @@ where
+@@ -259,6 +259,20 @@ where
+         }
+     }
+ 
++    /// [rgb-arkade: multi-party] Sign `inputs` of an Arkade tx built from several owners' VTXOs;
++    /// the other inputs are left for their owners.
++    pub fn sign_ark_tx_inputs(&self, ark_tx: &mut bitcoin::Psbt, inputs: &[usize]) -> Result<(), Error> {
++        for i in inputs {
++            sign_ark_transaction(self.make_sign_fn(), ark_tx, *i)?;
++        }
++        Ok(())
++    }
++
++    /// [rgb-arkade: multi-party] Sign this client's (server-signed) checkpoint tx of such an Arkade tx.
++    pub fn sign_checkpoint_tx(&self, checkpoint: &mut bitcoin::Psbt) -> Result<(), Error> {
++        Ok(sign_checkpoint_transaction(self.make_sign_fn(), checkpoint)?)
++    }
++
+     async fn auto_select_send_inputs(
+         &self,
+         receivers: &[SendReceiver],
+@@ -369,7 +383,7 @@ where
          Ok(inputs)
      }
  
@@ -333,7 +354,7 @@ index 65009bb..5193101 100644
          &self,
          vtxo_outpoints: &[OutPoint],
      ) -> Result<Vec<VtxoInput>, Error> {
-@@ -532,7 +532,7 @@ where
+@@ -532,7 +546,7 @@ where
      ///
      /// Returns the pending transaction payload from the server. The change-address key is marked
      /// as used.
@@ -342,7 +363,7 @@ index 65009bb..5193101 100644
          &self,
          mut ark_tx: bitcoin::Psbt,
          checkpoint_txs: Vec<bitcoin::Psbt>,
-@@ -588,7 +588,7 @@ where
+@@ -588,7 +602,7 @@ where
      }
  
      /// Sign checkpoint transactions from a [`PendingTx`] and finalize.

@@ -18,6 +18,7 @@ mod paths;
 mod proof;
 mod regtest;
 mod sweep_recovery;
+mod swap;
 mod watchtowerd;
 
 pub(crate) use common::*;
@@ -39,6 +40,7 @@ const SCENARIOS: &[(&str, &str, &str)] = &[
     ("verify-recovery", "<sweep-recovery dir>", "re-verify a recovery proof from chain data; a non-swept VTXO is rejected"),
     ("multi-user", "", "one batch, several users, two assets, BTC-only VTXOs, off-chain send with BTC + asset change"),
     ("failed-batch", "", "a colored batch fails, the asset is rolled back and the retry succeeds"),
+    ("swap", "", "atomic RGB-asset-for-bitcoin swap in one Arkade tx; refusal before signing rolls back"),
     ("multihop-exit", "", "app flows: 2 off-chain hops, collaborative exit of the change, unilateral exit + on-chain send"),
     ("fraud", "", "colluding operator co-signs two forfeits of one VTXO: fraud proof + online detection"),
 ];
@@ -84,6 +86,7 @@ async fn main() -> anyhow::Result<()> {
             "failed-batch" => batch_scenarios::run_fail().await,
             "fraud" => batch_scenarios::run_fraud().await,
             "multihop-exit" => app::run_multihop_exit().await,
+            "swap" => swap::run().await,
             other => {
                 usage()?;
                 anyhow::bail!("unknown scenario {other}")
