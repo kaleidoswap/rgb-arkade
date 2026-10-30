@@ -283,3 +283,13 @@ So with only the checkpoint change:
 - **Delegated renewal works with nothing new.** A renewal hop is an ordinary off-chain tx: the owner signs it ahead of time, anyone can submit it later, and the signature stops the delegate from changing where the bitcoin goes. The asset itself is bound to the destination VTXO by the checkpoint commitment, so a delegate can only submit the hop or not. Limits: the destination VTXO must exist when the owner signs, and each pre-signed hop buys one more batch period; the owner has to come back, or pre-sign a chain of hops onto VTXOs held in later batches.
 - **A keyless watchtower saves a user who stays offline past the last expiry**, by putting the colored VTXO on-chain from its pre-signed branch. The user can spend it on-chain at any later time.
 - **After an exit, the history still contains off-chain checkpoints**, because a renewal moves the asset onto a VTXO from another batch: unrolling that VTXO does not bring the checkpoint on-chain. On-chain receivers then need the Ark proof (operator co-signed checkpoints anchored in mined batch commitments). A plain RGB wallet rejects the transfer.
+
+### Unilateral exit through a swap (30 Oct 2026, CLI)
+
+A swap's Arkade tx spends two checkpoints (seller and buyer). The rust-sdk exit finalizer filled in only input 0 of each virtual tx, so broadcasting a branch through a swap failed (`Witness program was passed an empty witness`, input 1), and in a wallet holding both a transfer output and a swap output the exit could also stop with an index out of range. It now finalizes every input of each virtual tx with its own parent output.
+
+| Check | Outcome |
+|---|---|
+| Alice sends Bob 300, then sells him 200 for 20,000 sat; Bob exits the 300 and sends them on-chain to Alice | Alice `settled: 300` |
+| Bob exits the 200 bought in the swap | Whole branch on-chain: both batch branches, both checkpoints and the swap tx |
+| Bob sends those 200 on-chain | Not possible from the 1,000-sat carrier alone (needs a funding input) |
