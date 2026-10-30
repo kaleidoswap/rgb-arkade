@@ -4,10 +4,11 @@ RGB assets on [Arkade](https://github.com/arkade-os/arkd): a working regtest imp
 
 It is made of small patches to arkd, the Ark rust-sdk and rgb-lib (KaleidoSwap fork), plus a demo client (`ark-rgb-demo`) that runs every scenario end to end on a local regtest stack.
 
-> Status: research prototype, regtest only. Not production ready; see [Limitations](#status-and-limitations) and [Security model](#security-model).
+> Status: MVP complete. Research prototype, regtest only, not production ready. The outcome and the approaches compared are summarised in [Outcome](#outcome); see also [Limitations](#status-and-limitations) and [Security model](#security-model).
 
 ## Contents
 
+- [Outcome](#outcome)
 - [Architecture](#architecture)
 - [How it works](#how-it-works)
 - [Quickstart](#quickstart)
@@ -22,11 +23,25 @@ It is made of small patches to arkd, the Ark rust-sdk and rgb-lib (KaleidoSwap f
 
 Further reading: [docs/approaches.md](docs/approaches.md) (every approach tried, compared, with its tests and trade-offs), [docs/design.md](docs/design.md) (full design, atomic swap theory, open questions for Ark Labs), [docs/test-results.md](docs/test-results.md) (measured results, txids, payload sizes), [PATCHES.md](PATCHES.md) (every upstream change). An Italian, non-technical write-up is in the Page ["RGB su Arkade"](https://cursor.com/canvas/store-e5dae6c1-22ce-4fc9-be4f-958a0cdf37c7/d7de931f-98e3-4a02-af31-8ccd68868a97).
 
+## Outcome
+
+The MVP shows that RGB assets can live in Arkade VTXOs with client-side validation, and maps what each level of arkd support buys. The hard constraint is the same everywhere: a VTXO expires with its batch, so an asset must be renewed, moved on-chain or recovered before or after the sweep. Full comparison, with every test and its trade-offs: [docs/approaches.md](docs/approaches.md).
+
+| Lane | arkd | What works | Main limit |
+|---|---|---|---|
+| Stock | unmodified | Jump-in, one off-chain hop (also as one leg of an atomic swap), unilateral exit | One hop only, then out before expiry |
+| Checkpoint only (B) | one opt-in change (`patches/arkd-checkpoint.patch`) | Any number of hops, renewal onto a fresher VTXO, atomic swaps, sends to receivers with no VTXO (bitcoin first), delegated renewal, keyless watchtower exit; standard RGB | No batch refresh and no recovery after a sweep; after an exit, on-chain receivers need the Ark proof |
+| Full patch set (A + B + C) | three opt-in changes (`patches/arkd.patch`) | Everything above plus receive-to-address in one tx, batch refresh, collaborative exit, recovery after the sweep | The forfeit carries data, and seal uniqueness of unmined forfeits depends on the operator |
+| Look-through (branch `exp/tagged-opret`) | unmodified | Renewal and multi-hop on stock arkd | Needs one new RGB consensus rule |
+
+Recommended path: ask Ark Labs for the checkpoint change first (smallest, no forfeit involved, standard RGB), then the ark tx data output and the forfeit change as separate steps, each with its own use case. The look-through is the fallback that needs nothing from Arkade, and exit and re-enter remains the rescue path in every lane.
+
 ## Architecture
 
 | Component | Where | Role |
 |---|---|---|
 | arkd patches | `patches/arkd.patch` on arkd `v0.9.15`, image `arkd:rgb` (`arkd-image/`) | Opt-in user `OP_RETURN` (the RGB opret commitment) in checkpoint and forfeit txs, reproduced by arkd's deterministic rebuild; 0-sat opret treated as data; operator co-signs stored forfeits; forfeit-based recovery of swept VTXOs. |
+| arkd checkpoint-only build | `patches/arkd-checkpoint.patch` on arkd master `f863e48`, image `arkd:rgb-cponly` (`arkd-image-cponly/`, `make setup-cponly`) | Only the optional data `OP_RETURN` in the checkpoint tx: the B lane of [docs/approaches.md](docs/approaches.md), used by the `checkpoint-*` scenarios with `REGTEST_PROFILE=cponly`. |
 | rust-sdk patches | `patches/rust-sdk.patch` on rust-sdk `v0.12.0` | Client side of the above: checkpoint payload, forfeit hooks for refresh / collaborative exit / recovery, exit hooks, forfeit and connector lookups. |
 | rgb-lib Ark module | `patches/rgb-lib.patch` on kaleidoswap/rgb-lib `8852b2e` (`src/ark_proof.rs` + wallet methods) | Coloring PSBTs with seals on VTXOs/checkpoints, Ark-aware validation of unmined witnesses, self-contained Ark proofs, VTXO status and Ark balance, rollback of failed transfers, fraud proofs. |
 | Demo / CLI | `demo/` (`ark-rgb-demo`) | Wallet-side flows for every feature (`scenario <name>`), negative tests, benchmarks. |
@@ -59,6 +74,15 @@ make list         # list scenarios
 make scenario SCENARIO=offchain-transfer
 make scenario SCENARIO=collab-exit ARGS=--offline-proof
 make test         # quick regression suite (in minutes after make regtest-up-fast: exit delays in blocks)
+```
+
+Checkpoint-only lane (arkd master + one change), after `make setup`:
+
+```bash
+make setup-cponly       # clone arkd master, apply patches/arkd-checkpoint.patch, build arkd:rgb-cponly
+make regtest-up-cponly  # restart the stack clean on arkd:rgb-cponly
+make scenario SCENARIO=checkpoint-renew   # also checkpoint-swap, checkpoint-offline
+scripts/regtest-up.sh clean               # back to the full patch set
 ```
 
 Paths: everything (state, logs, regtest checkout, watchtower data) lives under the repository root, or under `$RGB_ARKADE_DIR` if set. The scripts use `$CARGO_TARGET_DIR` if you build the demo elsewhere. Each run writes `state/run-<ts>-<scenario>/` (wallets, consignments, proofs, `summary.json`) and prints a `... RESULT: PASS` line.
@@ -119,6 +143,10 @@ Limits: one action runs at a time; regtest only; an action interrupted by a rest
 | `exit-watchtower` | watchtower (in-process) | Watched VTXO exits before expiry; unwatched control is swept; the watchtower cannot redirect | ~30 min |
 | `stock-lane` | stock arkd | On an unpatched arkd (`REGTEST_PROFILE=stock`): jump-in onto a predicted checkpoint, swap with the commitment in the ark tx only (1-sat opret); records the limits (second hop, opret indexed as a VTXO, arkd restart) | ~2 min |
 | `swap` | atomic swap | Asset-for-bitcoin swap in one Arkade tx with inputs from two owners: the buyer checks the consignment over the unsigned txs and signs its side up front, the seller completes alone; a buyer who walks away or is short-changed leaves the seller to roll back; the buyer validates offline | ~1 min (fast profile) |
+| `opret-probe` | stock arkd | Which `OP_RETURN` outputs arkd takes in an Arkade tx, by shape and value | ~2 min |
+| `checkpoint-renew` | checkpoint only (`REGTEST_PROFILE=cponly`) | Renew an asset onto a VTXO of a later batch with the commitment in the checkpoint, let the old batch be swept, send it on; Bob validates offline; unattested checkpoints rejected; arkd restarts | ~3 min |
+| `checkpoint-swap` | checkpoint only | Atomic swap onto existing VTXOs (buyer checks before signing, short-changing seller refused), then a send to a receiver with no VTXO: bitcoin first, then the asset | ~1 min |
+| `checkpoint-offline` | checkpoint only | Pre-signed renewal submitted later by a keyless delegate (a tampered one is refused), keyless watchtower exit before the next expiry, on-chain send after the exit; plain RGB rejects, Ark proof accepts | ~3 min |
 | `multihop-exit` | app flows, unilateral exit | The app's actions headless: asset Alice → Bob → Alice off-chain, Alice exits her change collaboratively, then unilaterally exits the 100 she got back and spends it on-chain. The unrolled branch also holds her forfeited change output, which matures first; the exit spend must still spend the colored output, and the Ark balance must drop the spent `unrolled` amount, and the operator must react to the unrolled forfeited change by broadcasting its stored (colored) forfeit; Bob `100` on-chain | ~15 min |
 
 ```bash
@@ -129,14 +157,16 @@ scripts/run-all.sh                              # full suite, ~3 h (make test-al
 scripts/bench.sh                                # payload size / validation time, see docs/test-results.md
 ```
 
+The `stock-lane`, `opret-probe` and `checkpoint-*` scenarios need their own stack (`REGTEST_PROFILE=stock` or `make regtest-up-cponly`) and are not part of `run-all.sh`.
+
 Measured results and txids: [docs/test-results.md](docs/test-results.md).
 
 ## Status and limitations
 
-What works (measured on regtest): onboarding, multi-hop off-chain transfers with BTC and asset change, refresh, collaborative and unilateral exit, multi-user and multi-asset batches, failed-batch rollback and retry, offline verification with arkd down, recovery after the sweep months later, the optional keyless watchtower, and fraud proofs.
+What works (measured on regtest): onboarding, multi-hop off-chain transfers with BTC and asset change, refresh, collaborative and unilateral exit, multi-user and multi-asset batches, failed-batch rollback and retry, offline verification with arkd down, recovery after the sweep months later, the optional keyless watchtower, and fraud proofs. With only the checkpoint change on arkd master: renewal, atomic swaps, delegated renewal and watchtower exits.
 
 Limitations:
-- **Regtest only.** The patches target arkd `v0.9.15`, and none are upstream.
+- **Regtest only.** The full patch set targets arkd `v0.9.15`, the checkpoint-only patch arkd master; none are upstream.
 - **No direct onboarding** of a colored UTXO through boarding (it would need large arkd changes). Use the jump-in.
 - **rgb-lib integration is partial.** Ark state is kept in JSON files in the wallet dir (`ark_vtxos.json`, `ark_transfers.json`), not in rgb-lib's database. The stock `get_asset_balance` does not see Ark state; use `get_asset_balance_ark`. Rollback after a failed round is a manual call (`ark_rollback_transfer`).
 - **Electrum only.** The on-chain sweep check (`spender_of`) is not implemented for Esplora.
@@ -157,28 +187,31 @@ More in [docs/design.md](docs/design.md#security-model).
 
 ## Roadmap
 
-- **Upstream to Ark Labs:** propose the arkd changes (all small and opt-in) and the rust-sdk hooks; open questions are in [docs/design.md](docs/design.md#open-questions-for-ark-labs).
+The MVP is complete. If the work resumes:
+
+- **Upstream to Ark Labs:** propose the checkpoint change first, then the ark tx data output and the forfeit change; open questions are in [docs/design.md](docs/design.md#open-questions-for-ark-labs).
+- **RGB:** if Arkade support is not available, propose the checkpoint look-through rule to the RGB maintainers (branch `exp/tagged-opret`).
 - **rgb-lib:** move the Ark module into the KaleidoSwap fork with tests and database persistence, add Esplora support, and make rollback automatic.
+- **Wallet rules:** keep a spare uncolored VTXO for change and receives, never settle a colored VTXO in a batch without a forfeit commitment, renew before expiry, register a delegate and a watchtower when going offline.
+- **Longer absences:** chains of pre-signed renewal hops onto VTXOs of later batches.
 - **Delta consignments:** a hub keeps the verified history, and payments carry only the new part (with a validation cache). This needs rgb-lib work, not a consensus change.
-- **Delegated refresh:** refreshing for an offline user needs arkd support, because the forfeit must commit to an output that is unknown until the batch is built.
-- **Atomic swaps** (asset ↔ BTC and asset ↔ asset in one ark tx or batch; HTLC variants towards on-chain and RGB Lightning). The design is in [docs/design.md](docs/design.md#atomic-swap-on-arkade-with-rgb-theory-only) and not implemented.
-- **Wallet integration:** automatic refresh and recovery, `spent_by` monitoring, and a watchtower as a service.
+- **More swaps:** asset ↔ asset in one ark tx or batch, and HTLC variants towards on-chain and RGB Lightning ([docs/design.md](docs/design.md#atomic-swap-on-arkade-with-rgb-theory-only)).
 
 ## Repository layout
 
 | Path | What |
 |---|---|
 | `PATCHES.md`, `patches/` | One cumulative patch per upstream repo (arkd, rust-sdk, rgb-lib, arkade-regtest) plus the regtest `.env` |
-| `arkd-image/Dockerfile` | `arkd:rgb` = upstream arkd image with the patched binary |
-| `demo/` | `ark-rgb-demo`: `src/main.rs` (CLI), `common.rs` (wallet/client helpers), `paths.rs`, one module per feature (`basic`, `offchain_transfer`, `forfeit`, `proof`, `exit_watchtower`, `long_offline`, `watchtowerd`, `sweep_recovery`, `batch_scenarios`, `bench`), `regtest.rs`; `src/app.rs` + `app/index.html` (prototype app) |
-| `scripts/` | `setup.sh`, `regtest-up.sh`, `app.sh`, `run-scenario.sh`, `run-all.sh`, `bench.sh`, `patches-check.sh`, `lib.sh` |
+| `arkd-image/Dockerfile`, `arkd-image-cponly/Dockerfile` | `arkd:rgb` (full patch set) and `arkd:rgb-cponly` (checkpoint only) = upstream arkd image with the patched binary |
+| `demo/` | `ark-rgb-demo`: `src/main.rs` (CLI), `common.rs` (wallet/client helpers), `paths.rs`, one module per feature (`basic`, `offchain_transfer`, `forfeit`, `proof`, `exit_watchtower`, `long_offline`, `watchtowerd`, `sweep_recovery`, `batch_scenarios`, `swap`, `stock_lane`, `opret_probe`, `checkpoint_renew`, `checkpoint_swap`, `checkpoint_offline`, `bench`), `regtest.rs`; `src/app.rs` + `app/index.html` (prototype app) |
+| `scripts/` | `setup.sh`, `setup-cponly.sh`, `regtest-up.sh`, `app.sh`, `run-scenario.sh`, `run-all.sh`, `bench.sh`, `patches-check.sh`, `lib.sh` |
 | `tools/arkdb-sim/` | Test tool that plays a colluding operator editing its own sqlite DB (built into `tools/arkdb`) |
 | `bench/` | Fits and USDt-like extrapolation for the benchmark output |
 | `pools/` | Offline mirror of mempool's `pools-v2.json` |
 | `docs/` | `approaches.md`, `design.md`, `test-results.md` |
-| `Makefile` | `setup`, `build`, `regtest-up`, `app`, `scenario`, `test`, `test-all`, `bench`, `patches-check` |
+| `Makefile` | `setup`, `setup-cponly`, `build`, `regtest-up`, `regtest-up-cponly`, `app`, `scenario`, `test`, `test-all`, `bench`, `patches-check` |
 
-Generated, not committed: `vendor/`, `arkade-regtest/`, `state/`, `logs/`, `watchtowerd/`, `tools/arkdb`, `arkd-image/arkd`, `demo/target/`.
+Generated, not committed: `vendor/`, `arkade-regtest/`, `state/`, `logs/`, `watchtowerd/`, `tools/arkdb`, `arkd-image/arkd`, `arkd-image-cponly/arkd`, `demo/target/`.
 
 ## Contributing
 

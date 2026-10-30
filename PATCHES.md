@@ -5,11 +5,14 @@ One cumulative patch per upstream repository, applied by `scripts/setup.sh` on t
 | Patch | Upstream | Pinned commit |
 |---|---|---|
 | `patches/arkd.patch` | https://github.com/arkade-os/arkd | `f444de6c336c024f5b03e646feb781eec9a24c00` (`v0.9.15`) |
+| `patches/arkd-checkpoint.patch` | https://github.com/arkade-os/arkd | `f863e484719344edbe4a8d10cf5fe994b123f2c0` (master), built by `scripts/setup-cponly.sh` |
 | `patches/rust-sdk.patch` | https://github.com/arkade-os/rust-sdk | `f184a5f1aa77924b7fd40eede7cf2fd43854ae76` (`v0.12.0`) |
 | `patches/rgb-lib.patch` | https://github.com/kaleidoswap/rgb-lib | `8852b2e55606ebd568f56bdfd9fa9216fbec3435` |
 | `patches/arkade-regtest.patch` (+ `arkade-regtest.env`) | https://github.com/ArkLabsHQ/arkade-regtest | `457b9ef6119bea1b0a8f1356204ef2f1044b0c9b` |
 
 The arkd image `arkd:rgb` is upstream `ghcr.io/arkade-os/arkd:v0.9.15` with the binary replaced by the patched build (`arkd-image/Dockerfile`). Its version string reports `v0.9.15-rgb4`.
+
+The arkd image `arkd:rgb-cponly` is upstream `ghcr.io/arkade-os/arkd:v0.9.16` with the binary built from arkd master plus `patches/arkd-checkpoint.patch` only (`arkd-image-cponly/Dockerfile`): the `checkpoint-opret` change below, rebased on master, with its script helpers. It is the checkpoint-only lane of [docs/approaches.md](docs/approaches.md).
 
 ## arkd
 
