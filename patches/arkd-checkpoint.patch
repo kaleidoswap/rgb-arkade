@@ -1,0 +1,221 @@
+diff --git a/internal/core/application/indexer.go b/internal/core/application/indexer.go
+index 3eb1fa63..1f477704 100644
+--- a/internal/core/application/indexer.go
++++ b/internal/core/application/indexer.go
+@@ -11,6 +11,7 @@ import (
+ 	"encoding/json"
+ 	"errors"
+ 	"fmt"
++	"github.com/arkade-os/arkd/pkg/ark-lib/offchain"
+ 	"math"
+ 	"slices"
+ 	"sort"
+@@ -712,7 +713,9 @@ func (i *indexerService) walkVtxoChain(
+ 						Spends:    []string{ptx.UnsignedTx.TxIn[0].PreviousOutPoint.String()},
+ 					})
+ 
+-					allOutpoints = append(allOutpoints, Outpoint{Txid: txid, VOut: 0})
++					allOutpoints = append(allOutpoints, Outpoint{
++						Txid: txid, VOut: offchain.CheckpointOutputIndex(ptx.UnsignedTx),
++					})
+ 					chainTx.Spends = append(chainTx.Spends, txid)
+ 
+ 					// populate newNextVtxos with checkpoints inputs
+diff --git a/internal/core/application/service.go b/internal/core/application/service.go
+index 7f4258a0..7f1a488e 100644
+--- a/internal/core/application/service.go
++++ b/internal/core/application/service.go
+@@ -365,7 +365,8 @@ func (s *service) registerEventHandlers() {
+ 				checkpointTxsByOutpoint[ptx.UnsignedTx.TxIn[0].PreviousOutPoint.String()] = TxData{
+ 					Tx: tx, Txid: txid,
+ 				}
+-				script := hex.EncodeToString(ptx.UnsignedTx.TxOut[0].PkScript)
++				cpVout := offchain.CheckpointOutputIndex(ptx.UnsignedTx)
++				script := hex.EncodeToString(ptx.UnsignedTx.TxOut[cpVout].PkScript)
+ 				checkpointScripts = append(
+ 					checkpointScripts,
+ 					script,
+@@ -957,11 +958,21 @@ func (s *service) SubmitOffchainTx(
+ 			})
+ 		}
+ 
++		// optional user OP_RETURN in the checkpoint tx; the deterministic
++		// rebuild below reproduces it, so any other modification still fails the txid check.
++		checkpointOpReturn, err := script.ExtractDataOpReturn(checkpointPsbt.UnsignedTx)
++		if err != nil {
++			return nil, errors.CHECKPOINT_MISMATCH.New(
++				"invalid checkpoint tx %s: %s", checkpointTxid, err,
++			).WithMetadata(errors.CheckpointMismatchMetadata{ExpectedTxid: txid})
++		}
++
+ 		ins = append(ins, offchain.VtxoInput{
+ 			Outpoint:           &checkpointPsbt.UnsignedTx.TxIn[0].PreviousOutPoint,
+ 			Tapscript:          tapscript,
+ 			RevealedTapscripts: taptree,
+ 			Amount:             int64(vtxo.Amount),
++			CheckpointOpReturn: checkpointOpReturn,
+ 		})
+ 	}
+ 
+@@ -1392,7 +1403,8 @@ func (s *service) FinalizeOffchainTx(
+ 			return errors.INVALID_PSBT_INPUT.New("checkpoint tx has no outputs").
+ 				WithMetadata(errors.InputMetadata{Txid: txid, InputIndex: inIndex})
+ 		}
+-		checkpointOutputScript := checkpointTx.UnsignedTx.TxOut[0].PkScript
++		cpVout := offchain.CheckpointOutputIndex(checkpointTx.UnsignedTx)
++		checkpointOutputScript := checkpointTx.UnsignedTx.TxOut[cpVout].PkScript
+ 		if !bytes.Equal(checkpointOutputScript, expectedOutputScript) {
+ 			return errors.INVALID_PSBT_INPUT.New(
+ 				"invalid output script: got %x expected %x",
+@@ -1408,7 +1420,7 @@ func (s *service) FinalizeOffchainTx(
+ 
+ 		// save the encoded taproot tree in the checkpoint tx output
+ 		// it will be used to compute the sweep leaf in the sweeper
+-		checkpointTx.Outputs[0].TaprootTapTree = encodedTapTree
++		checkpointTx.Outputs[cpVout].TaprootTapTree = encodedTapTree
+ 
+ 		var b64checkpointTx string
+ 		b64checkpointTx, err = checkpointTx.B64Encode()
+@@ -4075,7 +4087,8 @@ func checkpointOutputScripts(txs []domain.Tx) []string {
+ 		if err != nil || len(ptx.UnsignedTx.TxOut) == 0 {
+ 			continue
+ 		}
+-		scripts = append(scripts, hex.EncodeToString(ptx.UnsignedTx.TxOut[0].PkScript))
++		cpVout := offchain.CheckpointOutputIndex(ptx.UnsignedTx)
++		scripts = append(scripts, hex.EncodeToString(ptx.UnsignedTx.TxOut[cpVout].PkScript))
+ 	}
+ 	return scripts
+ }
+diff --git a/internal/core/application/sweeper.go b/internal/core/application/sweeper.go
+index 438926fc..df793fa6 100644
+--- a/internal/core/application/sweeper.go
++++ b/internal/core/application/sweeper.go
+@@ -6,6 +6,7 @@ import (
+ 	"encoding/hex"
+ 	"errors"
+ 	"fmt"
++	"github.com/arkade-os/arkd/pkg/ark-lib/offchain"
+ 	"strings"
+ 	"sync"
+ 	"time"
+@@ -219,7 +220,7 @@ func (s *sweeper) scheduleCheckpointSweep(
+ 	vtxo domain.Outpoint, checkpointTx *psbt.Packet, blockTimestamp *ports.BlockTimestamp,
+ ) error {
+ 	checkpointTxid := checkpointTx.UnsignedTx.TxHash()
+-	checkpointVOut := uint32(0)
++	checkpointVOut := offchain.CheckpointOutputIndex(checkpointTx.UnsignedTx)
+ 
+ 	if len(checkpointTx.Outputs) <= int(checkpointVOut) {
+ 		return fmt.Errorf("no outputs found in checkpoint tx")
+@@ -310,7 +311,7 @@ func (s *sweeper) scheduleCheckpointSweep(
+ 			Txid:   checkpointTxid.String(),
+ 			Index:  checkpointVOut,
+ 			Script: hex.EncodeToString(prevoutScript),
+-			Value:  uint64(checkpointTx.UnsignedTx.TxOut[0].Value),
++			Value:  uint64(checkpointTx.UnsignedTx.TxOut[checkpointVOut].Value),
+ 			TapscriptLeaf: &ports.Tapscript{
+ 				InternalKey:  hex.EncodeToString(internalKey.SerializeCompressed()),
+ 				ControlBlock: hex.EncodeToString(sweepMerkleProof.ControlBlock),
+diff --git a/pkg/ark-lib/offchain/tx.go b/pkg/ark-lib/offchain/tx.go
+index 34d262f8..50b6ca38 100644
+--- a/pkg/ark-lib/offchain/tx.go
++++ b/pkg/ark-lib/offchain/tx.go
+@@ -25,6 +25,20 @@ type VtxoInput struct {
+ 	// RevealedTapscripts is the whole taproot tree of the vtxo
+ 	// it must be revealed to the ark operator in order to verify the spent paths are valid
+ 	RevealedTapscripts []string
++	// CheckpointOpReturn is an optional 32-byte payload the checkpoint tx carries in a 0-value
++	// OP_RETURN, so that it commits to data chosen by the VTXO owner (e.g. an RGB commitment).
++	// The OP_RETURN is the first output: client-side validation protocols look for it before
++	// any taproot output. The checkpoint output then moves to vout 1.
++	CheckpointOpReturn []byte
++}
++
++// CheckpointOutputIndex returns the vout of the checkpoint output of a checkpoint tx.
++func CheckpointOutputIndex(tx *wire.MsgTx) uint32 {
++	if len(tx.TxOut) > 1 && len(tx.TxOut[0].PkScript) > 0 &&
++		tx.TxOut[0].PkScript[0] == txscript.OP_RETURN {
++		return 1
++	}
++	return 0
+ }
+ 
+ // BuildTxs builds the ark and checkpoint txs for the given inputs and outputs.
+@@ -190,10 +204,17 @@ func buildCheckpointTx(
+ 		return nil, nil, err
+ 	}
+ 
++	checkpointOuts := []*wire.TxOut{{Value: vtxo.Amount, PkScript: checkpointPkScript}}
++	if vtxo.CheckpointOpReturn != nil {
++		opret, err := script.DataOpReturn(vtxo.CheckpointOpReturn)
++		if err != nil {
++			return nil, nil, err
++		}
++		checkpointOuts = append([]*wire.TxOut{opret}, checkpointOuts...)
++	}
++
+ 	// build the checkpoint virtual tx
+-	checkpointPtx, err := buildArkTx(
+-		[]VtxoInput{vtxo}, []*wire.TxOut{{Value: vtxo.Amount, PkScript: checkpointPkScript}},
+-	)
++	checkpointPtx, err := buildArkTx([]VtxoInput{vtxo}, checkpointOuts)
+ 	if err != nil {
+ 		return nil, nil, err
+ 	}
+@@ -221,7 +242,7 @@ func buildCheckpointTx(
+ 	checkpointInput := &VtxoInput{
+ 		Outpoint: &wire.OutPoint{
+ 			Hash:  checkpointPtx.UnsignedTx.TxHash(),
+-			Index: 0,
++			Index: CheckpointOutputIndex(checkpointPtx.UnsignedTx),
+ 		},
+ 		Amount: vtxo.Amount,
+ 		Tapscript: &waddrmgr.Tapscript{
+diff --git a/pkg/ark-lib/script/script.go b/pkg/ark-lib/script/script.go
+index dc184287..9555a4a2 100644
+--- a/pkg/ark-lib/script/script.go
++++ b/pkg/ark-lib/script/script.go
+@@ -117,6 +117,43 @@ func SubDustScript(taprootKey *btcec.PublicKey) ([]byte, error) {
+ 		Script()
+ }
+ 
++// DataOpReturnSize is the size of the optional payload of a checkpoint or forfeit tx.
++const DataOpReturnSize = 32
++
++// DataOpReturn is the 0-value `OP_RETURN <32 bytes>` output carrying payload.
++func DataOpReturn(payload []byte) (*wire.TxOut, error) {
++	if len(payload) != DataOpReturnSize {
++		return nil, fmt.Errorf(
++			"data OP_RETURN payload must be %d bytes, got %d", DataOpReturnSize, len(payload),
++		)
++	}
++	pkScript, err := txscript.NullDataScript(payload)
++	if err != nil {
++		return nil, err
++	}
++	return &wire.TxOut{Value: 0, PkScript: pkScript}, nil
++}
++
++// ExtractDataOpReturn returns the payload of the optional data OP_RETURN of a checkpoint or
++// forfeit tx (nil if there is none). Any other OP_RETURN, or more than one, is an error.
++func ExtractDataOpReturn(tx *wire.MsgTx) ([]byte, error) {
++	var payload []byte
++	for i, out := range tx.TxOut {
++		if len(out.PkScript) == 0 || out.PkScript[0] != txscript.OP_RETURN {
++			continue
++		}
++		if payload != nil {
++			return nil, fmt.Errorf("more than one OP_RETURN output")
++		}
++		if out.Value != 0 || len(out.PkScript) != 2+DataOpReturnSize ||
++			out.PkScript[1] != txscript.OP_DATA_32 {
++			return nil, fmt.Errorf("invalid OP_RETURN output #%d", i)
++		}
++		payload = out.PkScript[2:]
++	}
++	return payload, nil
++}
++
+ func IsSubDustScript(script []byte) bool {
+ 	tokenizer := txscript.MakeScriptTokenizer(0, script)
+ 	if !tokenizer.Next() || tokenizer.Opcode() != txscript.OP_RETURN {

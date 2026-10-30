@@ -11,3 +11,4 @@ watchtowerd.prev-*/
 *.arkproof.json
 .env
 __pycache__/
+arkd-image-cponly/arkd

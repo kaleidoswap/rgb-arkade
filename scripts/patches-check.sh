@@ -11,6 +11,7 @@ while read -r dir commit patch; do
   git -C "$R/$dir" worktree remove --force "$w"
 done <<'LIST'
 vendor/arkd f444de6c336c024f5b03e646feb781eec9a24c00 arkd.patch
+vendor/arkd-master f863e484719344edbe4a8d10cf5fe994b123f2c0 arkd-checkpoint.patch
 vendor/rust-sdk f184a5f1aa77924b7fd40eede7cf2fd43854ae76 rust-sdk.patch
 vendor/rgb-lib 8852b2e55606ebd568f56bdfd9fa9216fbec3435 rgb-lib.patch
 arkade-regtest 457b9ef6119bea1b0a8f1356204ef2f1044b0c9b arkade-regtest.patch
