@@ -32,16 +32,16 @@ const WT_FEERATE: u64 = 2; // sat/vB, package feerate target
 const BL_GINA: u64 = 808;
 const P2A: &str = "51024e73";
 
-struct Watchtower {
+pub(crate) struct Watchtower {
     secp: Secp256k1<bitcoin::secp256k1::All>,
     sk: SecretKey,
     pk: CompressedPublicKey,
     spk: ScriptBuf,
-    utxo: (OutPoint, Amount),
+    pub(crate) utxo: (OutPoint, Amount),
 }
 
 impl Watchtower {
-    async fn new(regtest: &Regtest) -> anyhow::Result<Self> {
+    pub(crate) async fn new(regtest: &Regtest) -> anyhow::Result<Self> {
         let secp = Secp256k1::new();
         let sk = SecretKey::new(&mut rand::thread_rng());
         let pk = CompressedPublicKey::from_private_key(&secp, &PrivateKey::new(sk, Network::Regtest)).map_err(|e| anyhow!("{e}"))?;
@@ -63,7 +63,7 @@ impl Watchtower {
 
     /// CPFP child (v3) spending the parent's P2A anchor + the fee UTXO. Pure: the caller commits
     /// the new fee UTXO only when the package is accepted.
-    fn bump(&self, parent: &Transaction) -> anyhow::Result<(Transaction, u64)> {
+    pub(crate) fn bump(&self, parent: &Transaction) -> anyhow::Result<(Transaction, u64)> {
         let anchor = parent
             .output
             .iter()
@@ -111,7 +111,7 @@ struct Watch {
     st: St,
 }
 
-fn submit_package(regtest: &Regtest, txs: &[&Transaction]) -> anyhow::Result<serde_json::Value> {
+pub(crate) fn submit_package(regtest: &Regtest, txs: &[&Transaction]) -> anyhow::Result<serde_json::Value> {
     let hexes: Vec<String> = txs.iter().map(|t| bitcoin::consensus::encode::serialize_hex(*t)).collect();
     regtest.rpc("submitpackage", serde_json::json!([hexes, 0.1, 0.0001]))
 }

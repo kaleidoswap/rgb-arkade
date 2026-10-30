@@ -262,3 +262,24 @@ Same stack as `checkpoint-renew` (arkd master + checkpoint data OP_RETURN only, 
 | Carol validates offline (arkd paused): consignment + Ark proof (2 checkpoints) | `400` received on R |
 
 So with only the checkpoint change, atomic swaps work, and a receiver with no VTXO can be paid in two steps: bitcoin first, which creates the VTXO, then the asset onto it. A 0-sat data OP_RETURN in the ark tx would only save that first step.
+
+### Offline users with the same single change (30 Oct 2026, scenario `checkpoint-offline`)
+
+Same stack (arkd master + checkpoint data OP_RETURN only, standard RGB, tree expiry 500 blocks). Alice holds 1000 units on V (batch 1) and a fresher VTXO G (batch 2, 246 blocks later), then goes offline.
+
+| Check | Outcome |
+|---|---|
+| Alice pre-signs the renewal V → G (her ark tx input and her checkpoint) and G's exit branch, hands them over, goes offline | Nothing secret handed over |
+| A delegate with no Alice key changes the ark tx to pay itself (negative) | Rejected by arkd: `INVALID_SIGNATURE` |
+| The delegate submits the pre-signed renewal 224 blocks after Alice signed, shortly before batch 1 expires | Accepted and finalized |
+| Batch 1 past its expiry | Swept; the asset is safe on G |
+| Shortly before batch 2 expires, a keyless watchtower broadcasts G's branch (1 tx, CPFP through the P2A anchor, 554 sat) | G on-chain, not swept |
+| Alice reloads her wallet from its seed and spends G on-chain to Gina, the commitment in her exit spend | Confirmed |
+| Gina validates with plain RGB (negative) | Rejected: the renewal checkpoint never reached the chain |
+| Gina imports the Ark proof of that checkpoint | `1000` settled |
+
+So with only the checkpoint change:
+
+- **Delegated renewal works with nothing new.** A renewal hop is an ordinary off-chain tx: the owner signs it ahead of time, anyone can submit it later, and the signature stops the delegate from changing where the bitcoin goes. The asset itself is bound to the destination VTXO by the checkpoint commitment, so a delegate can only submit the hop or not. Limits: the destination VTXO must exist when the owner signs, and each pre-signed hop buys one more batch period; the owner has to come back, or pre-sign a chain of hops onto VTXOs held in later batches.
+- **A keyless watchtower saves a user who stays offline past the last expiry**, by putting the colored VTXO on-chain from its pre-signed branch. The user can spend it on-chain at any later time.
+- **After an exit, the history still contains off-chain checkpoints**, because a renewal moves the asset onto a VTXO from another batch: unrolling that VTXO does not bring the checkpoint on-chain. On-chain receivers then need the Ark proof (operator co-signed checkpoints anchored in mined batch commitments). A plain RGB wallet rejects the transfer.

@@ -9,6 +9,7 @@ mod app;
 mod basic;
 mod batch_scenarios;
 mod bench;
+mod checkpoint_offline;
 mod checkpoint_renew;
 mod checkpoint_swap;
 mod common;
@@ -48,6 +49,7 @@ const SCENARIOS: &[(&str, &str, &str)] = &[
     ("stock-lane", "", "on STOCK arkd: jump-in to a predicted checkpoint, swap with the commitment in the ark tx only, limits recorded"),
     ("checkpoint-renew", "", "arkd with only the checkpoint data OP_RETURN: renew an asset onto a fresher VTXO and send it, standard RGB"),
     ("checkpoint-swap", "", "arkd with only the checkpoint data OP_RETURN: atomic swap onto existing VTXOs, then a send to a receiver with no VTXO"),
+    ("checkpoint-offline", "", "arkd with only the checkpoint data OP_RETURN: delegated renewal, keyless watchtower exit, on-chain send after exit"),
     ("swap", "", "atomic RGB-asset-for-bitcoin swap in one Arkade tx; refusal before signing rolls back"),
     ("multihop-exit", "", "app flows: 2 off-chain hops, collaborative exit of the change, unilateral exit + on-chain send"),
     ("fraud", "", "colluding operator co-signs two forfeits of one VTXO: fraud proof + online detection"),
@@ -97,6 +99,7 @@ async fn main() -> anyhow::Result<()> {
             "swap" => swap::run().await,
             "checkpoint-renew" => checkpoint_renew::run().await,
             "checkpoint-swap" => checkpoint_swap::run().await,
+            "checkpoint-offline" => checkpoint_offline::run().await,
             "stock-lane" => stock_lane::run().await,
             "opret-probe" => opret_probe::run().await,
             other => {
