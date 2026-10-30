@@ -919,7 +919,7 @@ index fb204cf..5a9ebc9 100644
              if asset_schema == AssetSchema::Ifa {
                  let contract_id = valid_consignment.contract_id();
 diff --git a/src/wallet/rust_only.rs b/src/wallet/rust_only.rs
-index 11d45e5..d34a70b 100644
+index 11d45e5..c069de7 100644
 --- a/src/wallet/rust_only.rs
 +++ b/src/wallet/rust_only.rs
 @@ -4,6 +4,15 @@
@@ -938,7 +938,7 @@ index 11d45e5..d34a70b 100644
  /// RGB asset-specific information to color a transaction
  #[derive(Debug, Clone)]
  pub struct AssetColoringInfo {
-@@ -407,6 +416,794 @@ impl Wallet {
+@@ -407,6 +416,817 @@ impl Wallet {
          ))
      }
  
@@ -1313,7 +1313,8 @@ index 11d45e5..d34a70b 100644
 +    /// [rgb-arkade: swaps] Validate, without accepting anything, a consignment whose last
 +    /// witnesses are `offchain_txids` (resolved from the consignment as Tentative, so they may be
 +    /// unsigned: a swap counterparty checks what it gets before signing its side), and return the
-+    /// assignments it puts on `vout` of witness `txid`.
++    /// assignments it puts on `vout` of witness `txid`, or on the explicit seal `txid:vout` when
++    /// `txid` is not the last witness (a transfer onto an existing VTXO).
 +    #[cfg(any(feature = "electrum", feature = "esplora"))]
 +    pub fn validate_consignment_offchain(
 +        &self,
@@ -1355,7 +1356,29 @@ index 11d45e5..d34a70b 100644
 +                return Err(Error::Network { details: e.to_string() });
 +            }
 +        }
-+        Ok(self.extract_received_assignments(&consignment, witness_id, Some(vout), None).into_values().collect())
++        match consignment.bundles.last() {
++            Some(bundle) if bundle.witness_id() != witness_id => {
++                let seal_txid = TxPtr::Txid(witness_id);
++                let mut received = vec![];
++                for KnownTransition { transition, .. } in bundle.bundle.known_transitions.iter() {
++                    for (ass_type, typed_assigns) in transition.assignments.iter() {
++                        if *ass_type != OS_ASSET {
++                            continue;
++                        }
++                        for a in typed_assigns.as_fungible() {
++                            if let Assign::Revealed { seal, state, .. } = a
++                                && seal.txid == seal_txid
++                                && seal.vout.into_u32() == vout
++                            {
++                                received.push(Assignment::Fungible(state.as_u64()));
++                            }
++                        }
++                    }
++                }
++                Ok(received)
++            }
++            _ => Ok(self.extract_received_assignments(&consignment, witness_id, Some(vout), None).into_values().collect()),
++        }
 +    }
 +
 +    /// [rgb-arkade] Validate a consignment file without accepting it, either with the
@@ -1733,7 +1756,7 @@ index 11d45e5..d34a70b 100644
      /// Consume an RGB fascia.
      ///
      /// <div class="warning">This method is meant for special usage and is normally not needed, use
-@@ -449,8 +1246,9 @@ impl Wallet {
+@@ -449,8 +1269,9 @@ impl Wallet {
      ) -> Result<UpdateRes, Error> {
          info!(self.logger(), "Updating witnesses...");
          self.check_online(online)?;

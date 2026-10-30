@@ -126,7 +126,7 @@ pub async fn run() -> anyhow::Result<()> {
 /// Spend the colored VTXO `from` off-chain (its bitcoin back to the owner) with the commitment in
 /// its checkpoint: all `units` move to the existing VTXO `to`. Returns (checkpoint, transfer, ark tx).
 #[allow(clippy::too_many_arguments)]
-async fn checkpoint_hop(
+pub(crate) async fn checkpoint_hop(
     ark: &ArkClient,
     rgb: &RgbWallet,
     info: &ark_core::server::Info,

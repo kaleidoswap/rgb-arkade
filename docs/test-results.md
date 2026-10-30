@@ -245,3 +245,20 @@ arkd master `f863e48` plus only the checkpoint commit (image `arkd:rgb-cponly`, 
 | arkd restart with these checkpoints stored | Serves again within 90 s |
 
 So with this single opt-in change an RGB asset can move any number of times and live past its batch without the forfeit: the owner (or a delegate) renews it onto a fresher VTXO before expiry. A colored VTXO must still never be settled in a batch.
+
+### Swap and send to a new receiver with the same single change (30 Oct 2026, scenario `checkpoint-swap`)
+
+Same stack as `checkpoint-renew` (arkd master + checkpoint data OP_RETURN only, standard RGB). Every transition sits in the seller's checkpoint and pays VTXOs that already exist (explicit seals), so the ark tx carries no commitment. rgb-lib's `validate_consignment_offchain` now also reports what a consignment puts on an explicit seal, so a buyer can check it before signing.
+
+| Check | Outcome |
+|---|---|
+| Alice holds 1000 units on S and a spare VTXO C; Bob holds bitcoin on B and a spare VTXO H | Set up |
+| Alice's checkpoint gives Bob 300 instead of the agreed 400 (negative) | Bob refuses before signing; Alice rolls back |
+| Swap in one Arkade tx: Alice's checkpoint commits S → H (400) + C (600), the ark tx pays Alice 30,000 sat from B | Accepted; Alice's new VTXO holds 130,000 sat |
+| Bob validates offline (arkd paused): consignment + Ark proof (1 checkpoint) | `400` received on H |
+| Alice's change | `600` on C |
+| Bob pays Carol, who has no VTXO, 1000 sat of plain bitcoin | Creates Carol's VTXO R |
+| Bob's checkpoint of H commits H → R | Accepted |
+| Carol validates offline (arkd paused): consignment + Ark proof (2 checkpoints) | `400` received on R |
+
+So with only the checkpoint change, atomic swaps work, and a receiver with no VTXO can be paid in two steps: bitcoin first, which creates the VTXO, then the asset onto it. A 0-sat data OP_RETURN in the ark tx would only save that first step.
