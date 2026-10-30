@@ -12,3 +12,4 @@ watchtowerd.prev-*/
 .env
 __pycache__/
 arkd-image-cponly/arkd
+.DS_Store
