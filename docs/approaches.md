@@ -174,7 +174,7 @@ Refresh through the batch with the commitment in the signed intent or in the new
 | Time offline | What protects the asset | Measured |
 |---|---|---|
 | Less than one batch period | Nothing needed: the owner renews on return | `checkpoint-renew` |
-| Up to one extra period | A delegate submits a pre-signed renewal hop | `checkpoint-offline` |
+| Up to the expiry of the freshest VTXO held when going offline (about one extra period) | A delegate submits a pre-signed renewal hop | `checkpoint-offline` |
 | Longer | A keyless watchtower puts the colored VTXO on-chain before expiry | `checkpoint-offline`, `long-offline` |
 | Past expiry with neither | Swept: bitcoin recoverable, asset lost (only C recovers it) | `exit-watchtower` control |
 
@@ -215,7 +215,7 @@ What we take from it:
 
 ## Not yet covered
 
-- Several pre-signed hops in a chain, for absences longer than two periods.
+- Delegated renewal beyond one extra period: a chain of pre-signed hops cannot do it (every destination must already exist and expires with its batch); it needs a delegated refresh that arkd supports for colored VTXOs, where the transition commits to an output known only when the batch is built.
 - Delegated renewal and watchtower exits with the look-through.
 - Wallet rules: keep a spare uncolored VTXO, never settle a colored VTXO in a batch.
 - Tapret commitments in user-built outputs (ark tx, exit spend) instead of `OP_RETURN`, and whether arkd accepts VTXO scripts with a tapret leaf.

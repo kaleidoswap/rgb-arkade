@@ -193,7 +193,7 @@ The MVP is complete. If the work resumes:
 - **RGB:** if Arkade support is not available, propose the checkpoint look-through rule to the RGB maintainers (branch `exp/tagged-opret`).
 - **rgb-lib:** move the Ark module into the KaleidoSwap fork with tests and database persistence, add Esplora support, and make rollback automatic.
 - **Wallet rules:** keep a spare uncolored VTXO for change and receives, never settle a colored VTXO in a batch without a forfeit commitment, renew before expiry, register a delegate and a watchtower when going offline.
-- **Longer absences:** chains of pre-signed renewal hops onto VTXOs of later batches.
+- **Longer absences:** a delegated refresh for colored VTXOs in arkd (the transition must commit to an output known only when the batch is built); pre-signed hops stop at the expiry of the freshest VTXO held when the owner goes offline.
 - **Delta consignments:** a hub keeps the verified history, and payments carry only the new part (with a validation cache). This needs rgb-lib work, not a consensus change.
 - **More swaps:** asset ↔ asset in one ark tx or batch, and HTLC variants towards on-chain and RGB Lightning ([docs/design.md](docs/design.md#atomic-swap-on-arkade-with-rgb-theory-only)).
 
