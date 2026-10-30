@@ -20,7 +20,7 @@ It is made of small patches to arkd, the Ark rust-sdk and rgb-lib (KaleidoSwap f
 - [Contributing](#contributing)
 - [License](#license)
 
-Further reading: [docs/design.md](docs/design.md) (full design, atomic swap theory, open questions for Ark Labs), [docs/test-results.md](docs/test-results.md) (measured results, txids, payload sizes), [PATCHES.md](PATCHES.md) (every upstream change). An Italian, non-technical write-up is in the Page ["RGB su Arkade"](https://cursor.com/canvas/store-e5dae6c1-22ce-4fc9-be4f-958a0cdf37c7/d7de931f-98e3-4a02-af31-8ccd68868a97).
+Further reading: [docs/approaches.md](docs/approaches.md) (every approach tried, compared, with its tests and trade-offs), [docs/design.md](docs/design.md) (full design, atomic swap theory, open questions for Ark Labs), [docs/test-results.md](docs/test-results.md) (measured results, txids, payload sizes), [PATCHES.md](PATCHES.md) (every upstream change). An Italian, non-technical write-up is in the Page ["RGB su Arkade"](https://cursor.com/canvas/store-e5dae6c1-22ce-4fc9-be4f-958a0cdf37c7/d7de931f-98e3-4a02-af31-8ccd68868a97).
 
 ## Architecture
 
@@ -175,7 +175,7 @@ More in [docs/design.md](docs/design.md#security-model).
 | `tools/arkdb-sim/` | Test tool that plays a colluding operator editing its own sqlite DB (built into `tools/arkdb`) |
 | `bench/` | Fits and USDt-like extrapolation for the benchmark output |
 | `pools/` | Offline mirror of mempool's `pools-v2.json` |
-| `docs/` | `design.md`, `test-results.md` |
+| `docs/` | `approaches.md`, `design.md`, `test-results.md` |
 | `Makefile` | `setup`, `build`, `regtest-up`, `app`, `scenario`, `test`, `test-all`, `bench`, `patches-check` |
 
 Generated, not committed: `vendor/`, `arkade-regtest/`, `state/`, `logs/`, `watchtowerd/`, `tools/arkdb`, `arkd-image/arkd`, `demo/target/`.
