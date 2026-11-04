@@ -1,6 +1,6 @@
 # Design
 
-How RGB assets live in Arkade VTXOs: where the seals sit, which transaction carries each commitment, how receivers verify without the operator, and how assets survive batch expiry. Approaches compared: [approaches.md](approaches.md). Measurements: [test-results.md](test-results.md). Code changes: [../PATCHES.md](../PATCHES.md).
+How RGB assets live in Arkade VTXOs: where the seals sit, which transaction carries each commitment, how receivers verify without the operator, and how assets survive batch expiry. Approaches compared: [approaches.md](approaches.md). Measurements: [test-results.md](test-results.md). Code changes: [../PATCHES.md](../PATCHES.md). Tapret instead of opret: [tapret-vs-opret.md](tapret-vs-opret.md).
 
 ## Background
 
@@ -43,7 +43,7 @@ In the honest case a forfeit is never mined, so for RGB it stays a tentative wit
 
 ## Offline verification: Ark proofs
 
-The sender attaches an Ark proof (`<consignment>.arkproof.json`) with every unmined Ark tx the history needs (checkpoints, ark txs, forfeits, connectors, tree branches) down to a mined commitment tx. The receiver checks it against the chain only:
+The sender attaches an Ark proof (`<consignment>.arkproof.pb`, protobuf, see `docs/protobuf.md`; JSON before) with every unmined Ark tx the history needs (checkpoints, ark txs, forfeits, connectors, tree branches) down to a mined commitment tx. The receiver checks it against the chain only:
 
 - every tx spends the previous output, down to a mined commitment tx;
 - tree signatures verify against the output key; checkpoint, ark tx and forfeit signatures against the operator key pinned in the wallet;
@@ -60,6 +60,7 @@ On bitcoin-only Arkade an expired VTXO is recovered in a new batch. An RGB asset
 |---|---|---|
 | Renewal: off-chain move onto a VTXO of a later batch | B | Any owner who comes back before expiry |
 | Pre-signed renewal hop submitted by a keyless delegate | B | About one extra period: the destination must exist when the owner signs |
+| RGB-aware delegate renews every period through a `CLTV(T){D,S}` leaf, with towers as fallback (O2 + O1, [delegate-renewal.md](delegate-renewal.md)) | B | Any absence, while the operator cooperates; refusal falls back to the tower exit. Trust: the delegate, after T |
 | Keyless exit watchtower: broadcasts the pre-signed branch before expiry | nothing | Any absence, at on-chain fee cost (about 550–650 sat per level at 2 sat/vB) |
 | Refresh in a batch | C | Owner online, no spare VTXO needed |
 | Sweep recovery: a forfeit with the commitment moves the swept asset to a new VTXO | C + `recovery-forfeit` | Any absence, if the operator cooperates on return |
@@ -85,6 +86,7 @@ Not implemented: asset-for-asset in one tx (two transitions in one commitment), 
 - The operator can refuse a refresh: the owner can still renew off-chain (B) or exit unilaterally before expiry.
 - The operator can refuse a sweep recovery. The swept branch can no longer be published, so the asset's seal can never be closed again: the asset is lost for good, although no valid transfer of it exists. Recovery after a sweep therefore depends on the operator cooperating.
 - Surviving a long absence (for example 2 months) without the operator: only a keyless watchtower that exits the colored VTXO before expiry, which must be running and funded for the on-chain fees. In the checkpoint-only lane (B) this is the only protection beyond about one extra batch period (a pre-signed delegated renewal); in the full patch set the alternative is a sweep recovery, with the condition above.
+- With a renewal delegate (O2), the receive VTXO has a `CLTV(T){D,S}` leaf. Before T it is unusable (rejected by arkd); after T the delegate alone can move the asset, because the operator cosigns any valid tx, and stock RGB validation accepts the result. Only the receiver-side policy check (a wallet rule) flags it. Mitigations: threshold delegate, short T window, bonds (see [delegate-renewal.md](delegate-renewal.md)).
 - Only a 32-byte commitment is visible to the operator and on-chain, but opret makes RGB transactions recognizable, so selective censorship is possible.
 - Exit cost grows with the number of unmined hops in the branch.
 

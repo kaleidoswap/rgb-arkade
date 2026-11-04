@@ -138,6 +138,7 @@ Cold verification: fresh wallet, with arkd paused. It includes importing the pro
 |---|---|---|
 | Compact binary proof: only the data the verifier reads, then converted back and verified by the same code | 40.4 kB (16 hops) | 15.2 kB (−62%) |
 | Binary proof plus gzip | 40.4 kB | 9.3 kB (−77%) |
+| Protobuf proof (the format in use since branch `protobuf-proof`: full PSBTs as raw bytes, no base64/JSON), 2026-11-03 run | 40.2 kB (gzip 16.3) | 29.6 kB (−26%), gzip 11.0 kB (−33%); see `docs/protobuf.md` |
 | gzip of the consignment | 21.7 kB | 11.1 kB (−49%) |
 | Receiver cache: only the transactions it has not already verified are sent | 15.2 kB cumulative | about 1 kB per new hop |
 | Already-mined transactions removed from the proof (already in the offline-proof work) | – | 39 bytes if everything is mined (never the case for forfeits, nor for checkpoint-only transfers and renewals) |
@@ -279,4 +280,59 @@ Commit `d3e2a14`. The images and the demo were built from a fresh clone by `scri
 | `cponly` | checkpoint-renew, checkpoint-swap, checkpoint-offline | 3 of 3 PASS |
 | `stock` | basic, opret-probe, stock-lane | 3 of 3 PASS |
 
-The time-scaled scenarios (`sweep-recovery`, `long-offline`, `exit-watchtower`) were not rerun.
+The time-scaled scenarios (`sweep-recovery`, `long-offline`, `exit-watchtower`) were run separately (next section).
+
+### Time-scaled scenarios and bench on merged main (1 Nov 2026, seconds profile)
+
+Commit `279d084`: main `eee1a0e` plus a separate log file for `--offline-proof` runs. These are the same images as the rerun above (`arkd:rgb-mvp` `sha256:1410f715618f…`, built from the same patches). The stack ran in its own Docker daemon. Times are Europe/Rome (CET).
+
+| Scenario | Run | Result | Key numbers |
+|---|---|---|---|
+| `sweep-recovery 720` (expiry 600 s ≈ a 7-day batch) | 15:34–15:51, 1022 s | PASS, and `verify-recovery` PASS | Alice is offline 720 s past the start and the batch is swept. On return she is flagged LOST until recovery, and rgb-lib reports `to_recover 1000`. One intent forfeits the swept VTXO into a new batch with the RGB transition in the forfeit; a second recovery intent is refused (`VTXO_ALREADY_SPENT`). Proof sizes: 1825 B (3 PSBTs) for the recovery, 3695 B (6 PSBTs) for Alice → Dave, who ends with `settled: 1000`. Tampered or incomplete proofs and an operator-only signature are rejected. |
+| `long-offline` (expiry 2048 s = 28 days, 1 day ≈ 73 s) | 15:51–16:36, 2663 s | PASS | Alice is offline 15.2 days and returns with 12.6 days left; Dave ends with `settled: 1000`. Erin is offline 28.3 days: the watchtower survives a kill and restart and an arkd pause, exits her 292 s before expiry for 554 sat in fees, and Gina ends with `settled: 1000`. A fee child altered by the watchtower is rejected (invalid signature). Frank (control, watchtower down) is swept and flagged LOST. The sweep tx was mined at 16:35:54, about 8.5 min after his expiry, which the scenario's retries cover. |
+| `exit-watchtower` (expiry 1024 s) | 16:36–17:07, 1900 s | PASS | Alice, Erin and Frank board the same batch. The watchtower unrolls Alice's 3-level branch 230 s before expiry, each level as a zero-fee parent plus a pre-signed child at 2.01 sat/vB: 640 + 640 + 554 = 1834 sat. Alice then pays Gina on-chain (`settled: 1000`). Erin (control, unwatched) is swept. |
+| `scripts/bench.sh` | 17:07–17:15, 444 s | done | 16 off-chain hops: consignment 21.7 kB (11.1 gz), JSON proof 40.4 kB, binary proof 15.2 kB (9.3 gz), cold verification 340 ms. Fits per hop: +1038 B consignment, +941 B binary proof, +12.6 ms. Refresh: +1788 B JSON proof per refresh. Mined transfer: +526 B, +5.3 ms. Merge: +732 B per input (16 inputs: 16.6 kB, 307 ms). Extrapolation (estimate): 100 transitions with 10 unmined off-chain gives 61 kB consignment, 9.2 kB binary proof, 0.72 s. |
+
+These match the earlier figures in [Payload size and validation time](#payload-size-and-validation-time-bench) to within run-to-run noise.
+
+### Delegate renewal, O2 + O1 (2 Nov 2026, scenario `delegate-renewal`, profile `cponly-seconds`)
+
+arkd master f863e48 + patch B only (`arkd:rgb-cponly`), arkd-wallet v0.9.16, batch expiry 1024 s = 7 simulated days (1 day ≈ 146.3 s), renewal at half life, towers 150 s before expiry. Isolated docker:dind stack. Design and table per renewal: [delegate-renewal.md](delegate-renewal.md#results).
+
+Smoke `delegate-renewal 12` (run-1793616742): **PASS**.
+
+- Negatives: N1 `{D}`-only leaf rejected (`INVALID_VTXO_SCRIPT`, owner spend of that VTXO also rejected); N2 delegate before T rejected (`FORFEIT_CLOSURE_LOCKED`); N3 delegate after T **accepted** by arkd, Mallory's stock check `Ok(1000)`, policy check 1 violation; N4 #961 guard refuses.
+- Olivia: 4 renewals over 14.1 days, 3–9 s each. Proof 4642 → 10117 B (+1825 B, +2 PSBTs per renewal; gz 2525 → 4325), consignment 5585 → 7169 B (+528 B). Import 11–22 ms, validate 178–231 ms, policy 9–30 ms. Discovery: 49 addresses, found the handoff VTXO. Sent to Bob: plain RGB rejected, with proof received 1000 (proof 11958 B, 12 PSBTs; import 20 ms, validate 213 ms).
+- Rita (operator refusal after renewal 1): towers A and B `done-onchain`, F1 broadcast 146 s before expiry, fee 554 sat; guard refused re-board; CSV spend to Gina; Gina settled 1000.
+- First smoke attempt hit a transient Electrum "tx can't be located" when Gina imported; `import_retry` and a resumable Rita return were added.
+
+Long run `delegate-renewal 60` (run-1793621378, 2 Nov 13:09–15:44, 9279 s, no clock gaps): **PASS**, on a stack rebuilt after the box was re-provisioned (same arkd commit + B, binary rebuilt; images `arkd:rgb-delegate-cponly` / `arkd:rgb-delegate-full`, tagged `arkd:rgb-cponly` / `arkd:rgb` only inside the dind daemon).
+
+- Negatives N1–N4: same results as the smoke run (N3 accepted by arkd, Mallory `Ok(1000)`, policy 1 violation).
+- Olivia: 18 renewals over 62.8 simulated days, 3–14 s each. Proof 4642 → 35667 B (gz 2469 → 12665, 5 → 39 PSBTs), +1825 B per renewal throughout; consignment 5585 → 14561 B (+528). Import 19 → 85 ms, validate 251 → 378 ms, policy 16 → 393 ms. 11 failed attempts in total: 10 `FORFEIT_CLOSURE_LOCKED` (block time behind T, retried after 10–20 s) and 1 metrics-check `Stock error` after renewal 10 had completed (transient indexer lookup; fixed in `91a0d9a`).
+- Olivia's return (day 62.9): discovery 160 addresses, found the handoff VTXO with 6.8 days left; policy 19 witnesses / 18 delegate spends / 0 violations; validate+accept 518 ms. To Bob: plain RGB "Invalid consignment"; with proof received 1000 (proof 37508 B / 13462 gz, 40 PSBTs; consignment 15089 B; import 79 ms, validate+accept 393 ms).
+- Rita: operator refusal at 13:20; 26 refused attempts; both towers broadcast at 13:34 (554 sat at 2 sat/vB); guard refused re-board; CSV spend to Gina, Gina settled 1000 (one import retry).
+- Extrapolation: 60 real days at 7-day expiry and renewal at half life = 18 renewals, about 35.7 kB proof (12.7 kB gz); one year about 194 kB (65 kB gz). Why it is linear and how to compact it: [delegate-renewal.md](delegate-renewal.md#why-proof-growth-is-linear-and-what-60-real-days-costs).
+
+Regressions on the same rebuilt isolated stack after the long run (2 Nov 2026, commit `91a0d9a` code):
+
+| `scripts/run-all.sh` mode | Stack | Scenarios | Result |
+|---|---|---|---|
+| `quick` | `REGTEST_PROFILE=fast`, `arkd:rgb` (v0.9.15 + full patch set, rebuilt from `f444de6` + `patches/arkd.patch`) | basic, basic-onchain-genesis, offchain-transfer, refresh, collab-exit (each also with `--offline-proof`), forfeit-negatives, multi-user, failed-batch, fraud, multihop-exit, swap | 16 of 16 PASS in 21.6 min |
+| `cponly` | `REGTEST_PROFILE=cponly`, `arkd:rgb-cponly` (master f863e48 + B) | checkpoint-renew, checkpoint-swap, checkpoint-offline | 3 of 3 PASS in 2.4 min |
+
+### Threshold delegate, 2-of-3 (2 Nov 2026, scenario `threshold-delegate`, profile `cponly-seconds`)
+
+Same stack as the delegate renewal (arkd master f863e48 + B only, `arkd:rgb-cponly`; isolated docker:dind). D1 coordinates (the `delegated` daemon); D2 and D3 are `cosignd` co-signers on localhost. Design and code citations: [threshold-delegate.md](threshold-delegate.md).
+
+Run 1 `threshold-delegate 14` (run-1793634510, 16:48–17:24 CET): **PASS**.
+
+- Olivia: 4 renewals over 14.1 days (subsets D1+D2, D1+D2, then D1+D3 after D2 went offline). Proof 5386 → 13093 B (+2569 B per renewal, against +1825 B for the single delegate; gz 2854 → 5283), consignment 5585 → 7169 B (unchanged growth). 0.65–0.94 s per renewal spent waiting for co-signers (4–6 signing requests). Wall time 4.4–14.3 s. Validate 217–252 ms.
+- Per co-signer request (D2 and D3 logs): intent 90 ms on average (max 108), forfeit 119 (151), ark tx 227 (245), checkpoint 255 (341).
+- Rita: D2 and D3 offline after renewal 1. 25 refusals ("only 1 of 3 delegates online"). Tower A exited 148 s before expiry. Rita validated 1000 `Unrolled`, the guard refused re-board, and Gina settled 1000.
+- Olivia's return: discovery 49 addresses, policy 5 witnesses / 4 delegate spends / 0 violations, Bob received 1000 (proof 15278 B, 12 PSBTs, validate 244 ms). The scripted return hit a transient Electrum resolver error after the policy check; a manual rerun of the same command passed. A validate retry was added.
+- Negatives: N3t-a (one delegate signs alone) is rejected at submit with `INVALID_SIGNATURE`, and the VTXO is not locked (the owner's spend afterwards is accepted). N3t-b: the honest D2 refuses ("ark tx output 0 pays a foreign script"). N3c: two colluding delegates are **accepted** by arkd, Mallory gets `Ok(1000)`, and the policy check gives 1 violation. N4: the guard refuses.
+
+Run 2 `threshold-delegate 7` (run-1793637146, 17:32–18:08 CET): **PASS**, with no manual step. Olivia again had 4 renewals over 14.1 days (she returns after Rita), with the same proof sizes as run 1. Waiting for co-signers took 661–1063 ms per renewal, wall time 2.8–14.6 s. Rita's towers exited and Gina settled 1000. Bob received 1000. New negative N3t-c: M_D asks D2 to co-sign a hop that returns the bitcoin to Nora's spare but seals the asset on Mallory's VTXO. **D2 refuses on the seal** ("not a colored template of this owner and delegate set", 280 ms). N3t-a/b, N3c and N4 gave the same results as in run 1.
+
+Regressions after the threshold-delegate work (same driver and binary, 2 Nov 2026): `quick` on the fast profile: **16/16 PASS** (18:09–18:30 CET, 1278 s). `cponly` on the checkpoint-only profile: **3/3 PASS** (`checkpoint-renew`, `checkpoint-swap`, `checkpoint-offline`; 18:32–18:35 CET, 153 s).
