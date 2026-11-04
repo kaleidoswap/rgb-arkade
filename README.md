@@ -100,6 +100,16 @@ Endpoints (app, CLI and scenarios): `RGB_ARKADE_ARKD_URL` (default `http://local
 
 The demo takes the operator keys to pin from arkd's `GetInfo` when a wallet is created. A real wallet must pin them out of band and keep the old keys after a rotation: proofs of earlier transfers are signed with them.
 
+## Arkade Intents solver (demo)
+
+`intents/solver.mjs` runs a minimal Nostr relay and a solver on it, so a wallet can buy an RGB asset over the Arkade Intents (`@arkade-os/swap`) RFQ wire. The solver publishes a card (kind 38859) for `arkade:RGB:*->arkade:BTC`, answers sealed RFQs (kind 24859, NIP-44) with a fixed price per unit, and settles through the app's one-tx atomic swap, as wallet `bob`. Relay events are signature-checked, and only browser-extension or origin-less clients may connect.
+
+```
+cd intents && npm install && node solver.mjs   # relay on ws://127.0.0.1:7447, app on http://127.0.0.1:8080
+```
+
+Env: `SOLVER_RELAY_PORT`, `SOLVER_APP_URL`, `SOLVER_PRICE` (sat per unit, default 100), `SOLVER_KEY_FILE` (default `state/intents-solver.key`). Demo only: one solver, one buyer wallet, no persistence beyond the key.
+
 ## Scenarios
 
 `scripts/run-scenario.sh <name>` runs one scenario and handles expiry changes, a background miner and watchtower daemons; `scripts/run-all.sh [quick|all|cponly|stock|full]` runs a suite: `quick` (`make test`) is the full patch set without the time-scaled scenarios, including `swap` and the `--offline-proof` variants; `all` (`make test-all`) adds the time-scaled ones; `cponly` and `stock` run the other lanes on their stacks; `full` (`make test-full`) runs every lane, restarting the stack clean with each profile.
@@ -141,6 +151,8 @@ Security model and trade-offs: [docs/design.md](docs/design.md#security-model).
 | `demo/` | `ark-rgb-demo`: scenarios (one module each), `cli`, `app`, `watchtowerd`, `bench` |
 | `scripts/`, `Makefile` | Setup, regtest stack, scenario runners, patch checks |
 | `docs/` | `approaches.md`, `design.md`, `test-results.md`, `media/` |
+| `intents/` | Demo Arkade Intents solver and relay |
+| `experiments/` | Look-through experiment: rgb-consensus and rgb-psbt-utils patches, results |
 | `tools/`, `bench/`, `pools/` | Colluding-operator test tool, benchmark analysis, offline mempool pools mirror (`pools-v2.json` from [mempool/mining-pools](https://github.com/mempool/mining-pools), MIT) |
 
 Generated, not committed: `vendor/`, `arkade-regtest/`, `state/`, `logs/`, `watchtowerd/`, the arkd binaries, `demo/target/`.
