@@ -144,7 +144,7 @@ The forfeit can carry a commitment, so a colored VTXO can be refreshed in a batc
 
 ### Look-through: an RGB rule instead of an arkd change
 
-Stock arkd. RGB gets one rule: a seal spent by a checkpoint-shaped tx counts as closed by the ark tx that spends checkpoint output 0. The commitment sits in the ark tx as a 0-sat tagged `OP_RETURN`. The experiment (small patches to rgb-consensus and rgb-psbt-utils) is not part of this repository; it is available on request.
+Stock arkd. RGB gets one rule: a seal spent by a checkpoint-shaped tx counts as closed by the ark tx that spends checkpoint output 0. The commitment sits in the ark tx as a 0-sat tagged `OP_RETURN`. The rgb-consensus and rgb-psbt-utils patches are in [experiments/look-through](../experiments/look-through/README.md), with results and limits.
 
 | Test | Scenario | Result |
 |---|---|---|

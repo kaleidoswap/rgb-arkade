@@ -19,7 +19,7 @@ RGB requires the tx that spends a seal to carry the commitment. In Arkade a VTXO
 | Stock | unmodified | Jump-in, one off-chain hop (also one leg of a swap), unilateral exit | One hop, then out before expiry |
 | **Checkpoint only (B)** | one opt-in change: [`patches/arkd-checkpoint.patch`](patches/arkd-checkpoint.patch), 5 files, +86/−11 on master | Any number of hops, renewal before expiry, atomic swaps, payments to receivers with no VTXO, delegated renewal, keyless watchtower exit. Standard RGB | No batch refresh or sweep recovery; an owner offline past about one extra batch period loses the asset unless a funded watchtower exits it; after an exit, on-chain receivers need the Ark proof |
 | Full patch set (A + B + C) | [`patches/arkd.patch`](patches/arkd.patch) on arkd v0.9.15: A, B, C, plus `forfeit-cosign` and `recovery-forfeit` (needed for sweep recovery) ([PATCHES.md](PATCHES.md#arkd)) | Also: receive on a new output in one tx, batch refresh, collaborative exit, recovery after a sweep | Forfeits carry data; seal uniqueness of unmined forfeits depends on the operator; recovery after a sweep needs the operator to cooperate |
-| Look-through | unmodified | Renewal and multi-hop on stock arkd | Needs a new RGB consensus rule (experiment, not in this repository) |
+| Look-through | unmodified | Renewal and multi-hop on stock arkd | Needs a new RGB consensus rule ([experiment](experiments/look-through/README.md)) |
 
 Suggested order: B, then A, then C, each as a separate change with its own use case. Unilateral exit stays the rescue path in every lane.
 

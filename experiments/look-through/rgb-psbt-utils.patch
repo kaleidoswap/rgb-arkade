@@ -1,0 +1,22 @@
+diff --git a/src/rb.rs b/src/rb.rs
+index 39edcfd..2b76e6b 100644
+--- a/src/rb.rs
++++ b/src/rb.rs
+@@ -277,7 +277,16 @@ impl RgbPsbtExt<ProprietaryKey, Output> for Psbt {
+             .proprietary_get(&ProprietaryKey::opret_commitment())
+             .unwrap();
+         let commitment: [u8; 32] = commitment.try_into().unwrap();
+-        let script = ScriptBuf::new_op_return(commitment);
++        // [rgb-arkade experiment] RGB_OPRET_TAGGED=1: OP_RETURN <0x52 || commitment> (one 33-byte
++        // push), the form arkd takes as a 0-sat data output; rgb-consensus (patched) accepts both
++        let script = if std::env::var("RGB_OPRET_TAGGED").is_ok_and(|v| v == "1") {
++            let mut data = [0u8; 33];
++            data[0] = 0x52;
++            data[1..].copy_from_slice(&commitment);
++            ScriptBuf::new_op_return(data)
++        } else {
++            ScriptBuf::new_op_return(commitment)
++        };
+         self.unsigned_tx.output[idx].script_pubkey = script;
+     }
+ 

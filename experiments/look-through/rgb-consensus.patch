@@ -1,0 +1,103 @@
+diff --git a/src/dbc/opret/spk.rs b/src/dbc/opret/spk.rs
+index 92662b2..251c9dc 100644
+--- a/src/dbc/opret/spk.rs
++++ b/src/dbc/opret/spk.rs
+@@ -26,6 +26,11 @@ use crate::commit_verify::mpc::Commitment;
+ use crate::commit_verify::{EmbedCommitProof, EmbedCommitVerify, EmbedVerifyError};
+ use crate::dbc::opret::{OpretError, OpretFirst, OpretProof};
+ 
++/// [rgb-arkade experiment] First byte of the tagged opret form `OP_RETURN <0x52 || commitment>`
++/// (one 33-byte push), which arkd takes as a 0-sat data output, unlike `OP_RETURN <32 bytes>`
++/// (its sub-dust VTXO format). Not RGB consensus: a local test only.
++pub const TAGGED_OPRET: u8 = 0x52;
++
+ impl EmbedCommitProof<Commitment, ScriptBuf, OpretFirst> for OpretProof {
+     fn restore_original_container(
+         &self,
+@@ -34,12 +39,16 @@ impl EmbedCommitProof<Commitment, ScriptBuf, OpretFirst> for OpretProof {
+         if !commit_container.is_op_return() {
+             return Err(OpretError::NoOpretOutput.into());
+         }
+-        if commit_container.len() != 34 {
+-            return Err(OpretError::InvalidOpretScript.into());
+-        }
++        let b = commit_container.as_bytes();
+         let mut script = ScriptBuf::new();
+         script.push_opcode(OP_RETURN);
+-        Ok(script)
++        match b.len() {
++            34 => Ok(script),
++            // [rgb-arkade experiment] tagged form OP_RETURN <TAG || commitment>: its original
++            // container is OP_RETURN <TAG>, which embed_commit turns back into the tagged form
++            35 if b[1] == 33 && b[2] == TAGGED_OPRET => Ok(ScriptBuf::new_op_return([TAGGED_OPRET])),
++            _ => Err(OpretError::InvalidOpretScript.into()),
++        }
+     }
+ }
+ 
+@@ -51,6 +60,13 @@ impl EmbedCommitVerify<Commitment, OpretFirst> for ScriptBuf {
+         if !self.is_op_return() {
+             return Err(OpretError::NoOpretOutput);
+         }
++        if self.as_bytes() == ScriptBuf::new_op_return([TAGGED_OPRET]).as_bytes() {
++            let mut data = [0u8; 33];
++            data[0] = TAGGED_OPRET;
++            data[1..].copy_from_slice(&msg.to_byte_array());
++            *self = ScriptBuf::new_op_return(data);
++            return Ok(OpretProof::default());
++        }
+         if self.len() != 1 {
+             return Err(OpretError::InvalidOpretScript);
+         }
+diff --git a/src/validation/validator.rs b/src/validation/validator.rs
+index b86afeb..b532cc1 100644
+--- a/src/validation/validator.rs
++++ b/src/validation/validator.rs
+@@ -482,6 +482,8 @@ impl<
+                         proof_method,
+                     )));
+                 }
++                let seals: BTreeSet<_> =
++                    seals.into_iter().map(|s| self.look_through(s, &witness.tx)).collect();
+                 // [VALIDATION]: CHECKING SINGLE-USE-SEALS
+                 witness
+                     .verify_many_seals(seals.iter(), &commitment)
+@@ -497,6 +499,38 @@ impl<
+         Ok(())
+     }
+ 
++    /// [rgb-arkade] Arkade checkpoint look-through.
++    ///
++    /// A seal not spent by `witness` directly is treated as closed by it when the witness spends
++    /// output 0 of a resolved tx shaped like an Arkade checkpoint: one input spending the seal,
++    /// outputs `[P2TR, P2A anchor]`. The checkpoint is fixed by arkd and carries no commitment,
++    /// the ark tx spending it does. Only output 0 counts, so the anyone-can-spend anchor cannot
++    /// carry a competing commitment.
++    fn look_through(&self, seal: BlindSeal<Txid>, witness: &Tx) -> BlindSeal<Txid> {
++        let outpoint = bitcoin::OutPoint::new(seal.txid, seal.vout.into_u32());
++        if witness.input.iter().any(|i| i.previous_output == outpoint) {
++            return seal;
++        }
++        for input in witness.input.iter().filter(|i| i.previous_output.vout == 0) {
++            let cp_txid = input.previous_output.txid;
++            let Ok(WitnessStatus::Resolved(cp, ord)) = self.resolver.resolve_witness(cp_txid)
++            else {
++                continue;
++            };
++            let p2a = |s: &bitcoin::ScriptBuf| s.as_bytes() == [0x51, 0x02, 0x4e, 0x73];
++            if ord != WitnessOrd::Archived
++                && cp.input.len() == 1
++                && cp.input[0].previous_output == outpoint
++                && cp.output.len() == 2
++                && cp.output[0].script_pubkey.is_p2tr()
++                && p2a(&cp.output[1].script_pubkey)
++            {
++                return BlindSeal { txid: cp_txid, vout: crate::Vout::from_u32(0), ..seal };
++            }
++        }
++        seal
++    }
++
+     fn validate_transition(
+         &self,
+         known_transition: &KnownTransition,
