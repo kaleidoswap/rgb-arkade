@@ -19,11 +19,12 @@ RGB requires the tx that spends a seal to carry the commitment. In Arkade a VTXO
 | Stock | unmodified | Jump-in, one off-chain hop (also one leg of a swap), unilateral exit | One hop, then out before expiry |
 | **Checkpoint only (B)** | one opt-in change: [`patches/arkd-checkpoint.patch`](patches/arkd-checkpoint.patch), 5 files, +86/−11 on master | Any number of hops, renewal before expiry, atomic swaps, payments to receivers with no VTXO, delegated renewal, keyless watchtower exit. Standard RGB | No batch refresh or sweep recovery; an owner offline past about one extra batch period loses the asset unless a funded watchtower exits it; after an exit, on-chain receivers need the Ark proof |
 | Full patch set (A + B + C) | [`patches/arkd.patch`](patches/arkd.patch) on arkd v0.9.15: A, B, C, plus `forfeit-cosign` and `recovery-forfeit` (needed for sweep recovery) ([PATCHES.md](PATCHES.md#arkd)) | Also: receive on a new output in one tx, batch refresh, collaborative exit, recovery after a sweep | Forfeits carry data; seal uniqueness of unmined forfeits depends on the operator; recovery after a sweep needs the operator to cooperate |
+| Master lane (B + C + A) | [`arkd-checkpoint.patch`](patches/arkd-checkpoint.patch) + [`arkd-master-ac.patch`](patches/arkd-master-ac.patch) on master, 8 files, +128/−14 | Checkpoint-only flows plus receive on a new output in one tx, batch refresh, collaborative exit, covenant renewal through a batch ([docs/arkd-master-lane.md](docs/arkd-master-lane.md)) | No sweep recovery (`recovery-forfeit` not ported); results so far from a development build |
 | Look-through | unmodified | Renewal and multi-hop on stock arkd | Needs a new RGB consensus rule ([experiment](experiments/look-through/README.md)) |
 
 Suggested order: B, then A, then C, each as a separate change with its own use case. Unilateral exit stays the rescue path in every lane.
 
-A + B + C rebased on arkd master (no `forfeit-cosign` or `recovery-forfeit`) is the branch [`rgb-opret-data-outputs`](https://github.com/bitwalt/arkd/tree/bee4a07bc9135c08d229c19e7c4b97d3dba82b8b) of the arkd fork; the quick-suite result on master in [docs/test-results.md](docs/test-results.md) comes from that branch, not from a patch in this repository.
+A + B + C on arkd master (no `forfeit-cosign` or `recovery-forfeit`) is the master lane above. The same changes are also the branch [`rgb-opret-data-outputs`](https://github.com/bitwalt/arkd/tree/bee4a07bc9135c08d229c19e7c4b97d3dba82b8b) of the arkd fork; the quick-suite result on master in [docs/test-results.md](docs/test-results.md) comes from that branch.
 
 ### An owner who stays offline
 
@@ -33,7 +34,8 @@ No lane keeps an asset alive for an unbounded absence on its own. What it takes,
 |---|---|---|
 | Less than one batch period | The owner renews on return | Renews or refreshes on return |
 | Up to about one extra period | A delegate submits a pre-signed renewal | Same |
-| Longer, e.g. 2 months | Only a keyless watchtower that exits the VTXO on-chain before expiry, with funds for the fees (about 550–650 sat per tree level at 2 sat/vB). Without it the batch is swept and the asset is lost | The watchtower exit as in B, or recovery after the sweep, which works only if the operator accepts the recovery intent. If the operator refuses, the asset cannot be moved again |
+| Longer, e.g. 2 months, with a delegate (O2 + O1, `delegate-renewal`) | An RGB-aware delegate renews every period with a checkpoint hop; keyless towers exit on-chain if the operator refuses. Trust: after T the delegate alone can move the asset (arkd cosigns automatically); receivers' policy check flags it ([docs/delegate-renewal.md](docs/delegate-renewal.md)). With a 2-of-3 threshold delegate (`threshold-delegate`) one delegate can no longer move or lock it: k colluding delegates can ([docs/threshold-delegate.md](docs/threshold-delegate.md)) | Same |
+| Longer, without a delegate | Only a keyless watchtower that exits the VTXO on-chain before expiry, with funds for the fees (about 550–650 sat per tree level at 2 sat/vB). Without it the batch is swept and the asset is lost | The watchtower exit as in B, or recovery after the sweep, which works only if the operator accepts the recovery intent. If the operator refuses, the asset cannot be moved again |
 
 The 64-day `sweep-recovery` run (full patch set, time-scaled) shows the cooperative case only.
 
@@ -52,7 +54,16 @@ Checkpoint-only lane:
 ```bash
 make setup-cponly                         # arkd master + patches/arkd-checkpoint.patch -> arkd:rgb-cponly
 make regtest-up-cponly
-make scenario SCENARIO=checkpoint-swap    # also checkpoint-renew, checkpoint-offline
+make scenario SCENARIO=checkpoint-swap    # also checkpoint-renew, checkpoint-offline, swap-ni
+```
+
+Master lane and the Arkade Script emulator (covenant scenarios `swap-emu`, `emu-*`; they run on the checkpoint-only or the master stack):
+
+```bash
+make setup-master                         # arkd master + B + C + A -> arkd:rgb-master
+make setup-emulator                       # arkade-os/emulator + patches/emulator.patch -> emulator:rgb, tools/emucov
+make regtest-up-master
+make scenario SCENARIO=emu-renew-batch
 ```
 
 Each run writes `state/run-<ts>-<scenario>/` (wallets, consignments, proofs, `summary.json`) and ends with `<NAME> RESULT: PASS`. On hosts whose iptables FORWARD policy is DROP: `iptables -I FORWARD 1 -s 172.16.0.0/12 -d 172.16.0.0/12 -j ACCEPT`.
@@ -110,6 +121,17 @@ cd intents && npm install && node solver.mjs   # relay on ws://127.0.0.1:7447, a
 
 Env: `SOLVER_RELAY_PORT`, `SOLVER_APP_URL`, `SOLVER_PRICE` (sat per unit, default 100), `SOLVER_KEY_FILE` (default `state/intents-solver.key`). Demo only: one solver, one buyer wallet, no persistence beyond the key.
 
+## Covenants, non-interactive swaps and wire format
+
+| Feature | What | Doc |
+|---|---|---|
+| Non-interactive sale | Maker presigns a `SINGLE\|ANYONECANPAY` offer on stock-shaped checkpoints; the taker fills alone; change, renewal and grief cases (`swap-ni`, `swap-ni-grief`) | [docs/swap-noninteractive.md](docs/swap-noninteractive.md) |
+| Emulator covenant sale | Fixed-price RGB sale enforced by an Arkade Script covenant (`swap-emu`); emulator patch with durable finalize | [docs/swap-emulator.md](docs/swap-emulator.md) |
+| Outcome covenants | Precommitted RGB outcomes (lots, escrow, lending, vault, asset swap), multi-party exit leaves, renewal (`emu-*`) | [docs/emulator-capabilities.md](docs/emulator-capabilities.md), [docs/arkade-script.md](docs/arkade-script.md) |
+| Delegated renewal | Delegate and 2-of-3 threshold delegate renewal for long absences | [docs/delegate-renewal.md](docs/delegate-renewal.md), [docs/threshold-delegate.md](docs/threshold-delegate.md) |
+| Protobuf payloads | Ark proof, fraud proof, offers and watchtower registration as protobuf (`proto/`, `scripts/proto-check.sh`) | [docs/protobuf.md](docs/protobuf.md) |
+| Operator risk, tapret | Trust in and risk for the operator, minimal-arkd options; why commitments stay opret | [docs/operator-risk.md](docs/operator-risk.md), [docs/tapret-vs-opret.md](docs/tapret-vs-opret.md) |
+
 ## Scenarios
 
 `scripts/run-scenario.sh <name>` runs one scenario and handles expiry changes, a background miner and watchtower daemons; `scripts/run-all.sh [quick|all|cponly|stock|full]` runs a suite: `quick` (`make test`) is the full patch set without the time-scaled scenarios, including `swap` and the `--offline-proof` variants; `all` (`make test-all`) adds the time-scaled ones; `cponly` and `stock` run the other lanes on their stacks; `full` (`make test-full`) runs every lane, restarting the stack clean with each profile.
@@ -128,6 +150,12 @@ Env: `SOLVER_RELAY_PORT`, `SOLVER_APP_URL`, `SOLVER_PRICE` (sat per unit, defaul
 | `multihop-exit` | App flows headless, exit of a multi-hop asset |
 | `stock-lane`, `opret-probe` | Unmodified arkd (`REGTEST_PROFILE=stock`): one hop and a swap; which `OP_RETURN` shapes arkd takes |
 | `checkpoint-renew`, `checkpoint-swap`, `checkpoint-offline` | Checkpoint only (`make regtest-up-cponly`): renewal, swap, payment to a receiver with no VTXO, delegated renewal, watchtower exit |
+| `delegate-renewal [days]` | Checkpoint only, seconds profile (`REGTEST_PROFILE=cponly-seconds`, expiry 1024 s = 7 days): owners offline for `days` simulated days while an RGB-aware delegate renews; return, send and validate; operator refusal → tower exit; negatives N1–N4; proof growth per renewal |
+| `swap-ni`, `swap-ni-grief [exit\|burn\|expire]` | Checkpoint only: non-interactive sale, change, renewals; maker grief cases |
+| `swap-emu [crash]` | Checkpoint only + `emulator:rgb`: covenant sale, negatives, crash between submit and finalize |
+| `emu-lots`, `emu-escrow`, `emu-lending`, `emu-vault`, `emu-asset-swap`, `emu-exit`, `emu-renew` | Checkpoint only + `emulator:rgb`: outcome covenants, on-chain exits, renewal by hops |
+| `emu-renew-batch` | Master lane + `emulator:rgb`: covenant VTXO renewed through a batch, the forfeit carries the transition |
+| `threshold-delegate [days]` | Same profile: 2-of-3 delegates (coordinator + two `cosignd` co-signers, each checking the same-owner rule before signing); one co-signer offline → renewals continue; two offline → tower exit; negatives N3t (one malicious delegate), N3c (two colluding) |
 
 `basic*`, `offchain-transfer`, `refresh` and `collab-exit` also run with `--offline-proof` (receivers validate with arkd paused; tampered proofs rejected). Results: [docs/test-results.md](docs/test-results.md).
 
@@ -146,16 +174,17 @@ Security model and trade-offs: [docs/design.md](docs/design.md#security-model).
 
 | Path | What |
 |---|---|
-| `patches/`, `PATCHES.md` | One patch per upstream (arkd full set, arkd checkpoint only, rust-sdk, rgb-lib, arkade-regtest) |
-| `arkd-image/`, `arkd-image-cponly/` | `arkd:rgb` and `arkd:rgb-cponly`: upstream image with the patched binary |
+| `patches/`, `PATCHES.md` | One patch per upstream (arkd full set, arkd checkpoint only and master lane, rust-sdk, rgb-lib, emulator, arkade-regtest) |
+| `arkd-image*/`, `emulator-image/` | `arkd:rgb`, `arkd:rgb-cponly`, `arkd:rgb-master`, `emulator:rgb`: upstream image with the patched binary |
 | `demo/` | `ark-rgb-demo`: scenarios (one module each), `cli`, `app`, `watchtowerd`, `bench` |
 | `scripts/`, `Makefile` | Setup, regtest stack, scenario runners, patch checks |
-| `docs/` | `approaches.md`, `design.md`, `test-results.md`, `media/` |
+| `docs/` | `approaches.md`, `design.md`, `test-results.md`, one document per feature (table above), `media/` |
+| `proto/` | Protobuf schemas of the out-of-band payloads |
 | `intents/` | Demo Arkade Intents solver and relay |
 | `experiments/` | Look-through experiment: rgb-consensus and rgb-psbt-utils patches, results |
-| `tools/`, `bench/`, `pools/` | Colluding-operator test tool, benchmark analysis, offline mempool pools mirror (`pools-v2.json` from [mempool/mining-pools](https://github.com/mempool/mining-pools), MIT) |
+| `tools/`, `bench/`, `pools/` | Colluding-operator test tool, `emucov` (covenant builder for the emulator scenarios), tapret and Arkade Script probes, benchmark analysis, offline mempool pools mirror (`pools-v2.json` from [mempool/mining-pools](https://github.com/mempool/mining-pools), MIT) |
 
-Generated, not committed: `vendor/`, `arkade-regtest/`, `state/`, `logs/`, `watchtowerd/`, the arkd binaries, `demo/target/`.
+Generated, not committed: `vendor/`, `arkade-regtest/`, `state/`, `logs/`, `watchtowerd/`, the arkd and emulator binaries, `tools/emucov/emucov`, `demo/target/`.
 
 To change upstream code: edit `vendor/<repo>`, then `git -C vendor/<repo> diff > patches/<repo>.patch` (`git add -N` new files first) and `make patches-check`. `make setup` notices a changed patch (stamps in `vendor/.stamps/`): a checkout that already matches it is kept, one with other changes stops the setup until you regenerate the patch or rerun with `RESET_VENDOR=1`.
 
