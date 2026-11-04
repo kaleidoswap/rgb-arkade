@@ -37,6 +37,17 @@ pub(crate) fn bl<T>(f: impl FnOnce() -> T) -> T {
 }
 
 pub(crate) async fn ark_client(name: &str, regtest: Arc<Regtest>, state: &Path) -> anyhow::Result<(ArkClient, Arc<ArkBdkWallet>)> {
+    ark_client_at(name, regtest, state, &crate::paths::arkd_url()).await
+}
+
+/// [`ark_client`] against an explicit arkd endpoint.
+pub(crate) async fn ark_client_at(name: &str, regtest: Arc<Regtest>, state: &Path, url: &str) -> anyhow::Result<(ArkClient, Arc<ArkBdkWallet>)> {
+    ark_client_keyed(name, regtest, state, url, None).await
+}
+
+/// [`ark_client_at`]; with `key`, the client signs with that one static key (a delegate D) instead
+/// of an HD wallet.
+pub(crate) async fn ark_client_keyed(name: &str, regtest: Arc<Regtest>, state: &Path, url: &str, key: Option<Keypair>) -> anyhow::Result<(ArkClient, Arc<ArkBdkWallet>)> {
     let secp = Secp256k1::new();
     let mut seed = [0u8; 32];
     let mut sk_bytes = [0u8; 32];
@@ -47,18 +58,12 @@ pub(crate) async fn ark_client(name: &str, regtest: Arc<Regtest>, state: &Path) 
     let kp = Keypair::from_secret_key(&secp, &SecretKey::from_slice(&sk_bytes)?);
     let wallet = Arc::new(ArkBdkWallet::new(kp, Network::Regtest, &crate::paths::esplora_url())?);
     let xpriv = Xpriv::new_master(Network::Regtest, &seed)?;
-    let client = OfflineClient::with_bip32(
-        OfflineClientConfig {
-            ark_server_url: crate::paths::arkd_url(),
-            boltz_url: "http://localhost:9069".to_string(),
-            ..Default::default()
-        },
-        xpriv,
-        None,
-        regtest,
-        wallet.clone(),
-        Arc::new(InMemorySwapStorage::default()),
-    )
+    let config = OfflineClientConfig { ark_server_url: url.to_string(), boltz_url: "http://localhost:9069".to_string(), ..Default::default() };
+    let offline = match key {
+        Some(k) => OfflineClient::with_keypair(config, k, regtest, wallet.clone(), Arc::new(InMemorySwapStorage::default())),
+        None => OfflineClient::with_bip32(config, xpriv, None, regtest, wallet.clone(), Arc::new(InMemorySwapStorage::default())),
+    };
+    let client = offline
     .connect_with_retries(5)
     .await
     .map_err(|e| anyhow!("{name}: connect: {e:?}"))?;

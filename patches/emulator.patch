@@ -1,0 +1,868 @@
+diff --git a/internal/application/pending.go b/internal/application/pending.go
+new file mode 100644
+index 0000000..c1a316f
+--- /dev/null
++++ b/internal/application/pending.go
+@@ -0,0 +1,269 @@
++package application
++
++// [rgb] Durable finalize. A tx the emulator co-signed as finalizer is written to
++// $EMULATOR_DATADIR/pending/<txid>.json BEFORE arkd SubmitTx, and removed once arkd finalized it
++// (or holds nothing pending for it). After a crash, a restart, a failed finalize retry or a
++// "duplicated offchain tx" resubmit, completePending fetches arkd's checkpoint signatures with
++// GetPendingTx (intent proof signed by the emulator's tweaked key), merges them and finalizes.
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"os"
++	"path/filepath"
++	"strings"
++	"sync"
++	"time"
++
++	"github.com/arkade-os/arkd/pkg/ark-lib/intent"
++	"github.com/arkade-os/emulator/pkg/arkade"
++	"github.com/btcsuite/btcd/psbt/v2"
++	log "github.com/sirupsen/logrus"
++)
++
++var pendingResumeInterval = 10 * time.Second
++
++type pendingFill struct {
++	ArkTxid     string   `json:"ark_txid"`
++	ArkTx       string   `json:"ark_tx"`      // emulator-signed ark tx
++	Checkpoints []string `json:"checkpoints"` // emulator + co-signer signatures (no arkd signature)
++}
++
++type pendingStore struct {
++	dir  string
++	mu   sync.Mutex
++	busy map[string]bool
++}
++
++// newPendingStore returns nil (no persistence) when datadir is empty.
++func newPendingStore(datadir string) (*pendingStore, error) {
++	if datadir == "" {
++		return nil, nil
++	}
++	dir := filepath.Join(datadir, "pending")
++	if err := os.MkdirAll(dir, 0o700); err != nil {
++		return nil, err
++	}
++	return &pendingStore{dir: dir, busy: map[string]bool{}}, nil
++}
++
++func (p *pendingStore) path(txid string) string { return filepath.Join(p.dir, txid+".json") }
++
++// save writes atomically (temp file, fsync, rename, fsync dir).
++func (p *pendingStore) save(f pendingFill) error {
++	b, err := json.Marshal(f)
++	if err != nil {
++		return err
++	}
++	tmp := p.path(f.ArkTxid) + ".tmp"
++	fh, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
++	if err != nil {
++		return err
++	}
++	if _, err := fh.Write(b); err != nil {
++		fh.Close()
++		return err
++	}
++	if err := fh.Sync(); err != nil {
++		fh.Close()
++		return err
++	}
++	if err := fh.Close(); err != nil {
++		return err
++	}
++	if err := os.Rename(tmp, p.path(f.ArkTxid)); err != nil {
++		return err
++	}
++	if d, err := os.Open(p.dir); err == nil {
++		_ = d.Sync()
++		d.Close()
++	}
++	return nil
++}
++
++func (p *pendingStore) remove(txid string) {
++	if err := os.Remove(p.path(txid)); err != nil && !os.IsNotExist(err) {
++		log.WithField("txid", txid).Warnf("failed to remove pending record: %s", err)
++	}
++}
++
++func (p *pendingStore) list() ([]pendingFill, error) {
++	names, err := filepath.Glob(filepath.Join(p.dir, "*.json"))
++	if err != nil {
++		return nil, err
++	}
++	out := make([]pendingFill, 0, len(names))
++	for _, n := range names {
++		b, err := os.ReadFile(n)
++		if err != nil {
++			return nil, err
++		}
++		var f pendingFill
++		if err := json.Unmarshal(b, &f); err != nil {
++			log.WithField("file", n).Warnf("skipping unreadable pending record: %s", err)
++			continue
++		}
++		out = append(out, f)
++	}
++	return out, nil
++}
++
++// claim marks txid as being handled (by a request or the resume loop); false if it already is.
++func (p *pendingStore) claim(txid string) bool {
++	p.mu.Lock()
++	defer p.mu.Unlock()
++	if p.busy[txid] {
++		return false
++	}
++	p.busy[txid] = true
++	return true
++}
++
++func (p *pendingStore) release(txid string) {
++	p.mu.Lock()
++	defer p.mu.Unlock()
++	delete(p.busy, txid)
++}
++
++// completePending finalizes a recorded tx. done: arkd finalized it now, or holds no pending tx
++// with this txid (never accepted, or already finalized), so the record can be dropped.
++func (s *service) completePending(ctx context.Context, f pendingFill) (bool, error) {
++	arkPtx, err := psbt.NewFromRawBytes(strings.NewReader(f.ArkTx), true)
++	if err != nil {
++		return true, fmt.Errorf("malformed recorded ark tx: %w", err)
++	}
++	cps := make([]*psbt.Packet, 0, len(f.Checkpoints))
++	for _, c := range f.Checkpoints {
++		cp, err := psbt.NewFromRawBytes(strings.NewReader(c), true)
++		if err != nil {
++			return true, fmt.Errorf("malformed recorded checkpoint: %w", err)
++		}
++		cps = append(cps, cp)
++	}
++	// an input this emulator signed: its checkpoint input proves ownership of the spent vtxo
++	packet, err := arkade.FindEmulatorPacket(arkPtx.UnsignedTx)
++	if err != nil {
++		return true, err
++	}
++	var owned *psbt.Packet
++	var scriptHash []byte
++	for _, entry := range packet {
++		for _, pk := range s.signerPubKeys {
++			script, err := arkade.ReadArkadeScript(arkPtx, pk, entry)
++			if err != nil {
++				continue
++			}
++			for _, cp := range cps {
++				if cp.UnsignedTx.TxHash() == arkPtx.UnsignedTx.TxIn[entry.Vin].PreviousOutPoint.Hash {
++					owned, scriptHash = cp, script.Hash()
++				}
++			}
++			break
++		}
++		if owned != nil {
++			break
++		}
++	}
++	if owned == nil {
++		return true, fmt.Errorf("no input of %s signed by this emulator", f.ArkTxid)
++	}
++	msg, err := intent.GetPendingTxMessage{
++		BaseMessage: intent.BaseMessage{Type: intent.IntentMessageTypeGetPendingTx},
++		ExpireAt:    time.Now().Add(2 * time.Minute).Unix(),
++	}.Encode()
++	if err != nil {
++		return false, err
++	}
++	in := owned.Inputs[0]
++	proof, err := intent.New(msg, []intent.Input{{
++		OutPoint:    &owned.UnsignedTx.TxIn[0].PreviousOutPoint,
++		Sequence:    owned.UnsignedTx.TxIn[0].Sequence,
++		WitnessUtxo: in.WitnessUtxo,
++	}}, nil)
++	if err != nil {
++		return false, err
++	}
++	for i := range proof.Inputs {
++		proof.Inputs[i].TaprootLeafScript = in.TaprootLeafScript
++	}
++	if err := s.Service.SignPendingTxProof(&proof.Packet, scriptHash); err != nil {
++		return false, err
++	}
++	encodedProof, err := proof.B64Encode()
++	if err != nil {
++		return false, err
++	}
++	pending, err := s.arkd.GetPendingTx(ctx, encodedProof, msg)
++	if err != nil {
++		return false, fmt.Errorf("get pending tx: %w", err)
++	}
++	var arkdCps []string
++	found := false
++	for _, p := range pending {
++		if p.Txid == f.ArkTxid {
++			arkdCps, found = p.SignedCheckpointTxs, true
++		}
++	}
++	if !found {
++		return true, nil
++	}
++	final := make([]string, 0, len(cps))
++	for _, cp := range cps {
++		for _, a := range arkdCps {
++			ap, err := psbt.NewFromRawBytes(strings.NewReader(a), true)
++			if err != nil {
++				return false, fmt.Errorf("malformed arkd checkpoint: %w", err)
++			}
++			if ap.UnsignedTx.TxHash() == cp.UnsignedTx.TxHash() && len(ap.Inputs) > 0 {
++				cp.Inputs[0].TaprootScriptSpendSig = mergeTapscriptSigs(
++					cp.Inputs[0].TaprootScriptSpendSig, ap.Inputs[0].TaprootScriptSpendSig,
++				)
++			}
++		}
++		enc, err := cp.B64Encode()
++		if err != nil {
++			return false, err
++		}
++		final = append(final, enc)
++	}
++	if err := s.arkd.FinalizeTx(ctx, f.ArkTxid, final); err != nil {
++		return false, fmt.Errorf("finalize: %w", err)
++	}
++	return true, nil
++}
++
++// resumeOne handles one record unless a request or another pass already does.
++func (s *service) resumeOne(ctx context.Context, f pendingFill) {
++	if !s.pending.claim(f.ArkTxid) {
++		return
++	}
++	defer s.pending.release(f.ArkTxid)
++	done, err := s.completePending(ctx, f)
++	if err != nil {
++		log.WithField("txid", f.ArkTxid).Warnf("pending tx: %s", err)
++	}
++	if done {
++		s.pending.remove(f.ArkTxid)
++		log.WithField("txid", f.ArkTxid).Info("pending tx resolved")
++	}
++}
++
++// resumePending runs at startup and then every pendingResumeInterval until ctx is done: this
++// replaces the in-memory finalize retry as the durable one.
++func (s *service) resumePending(ctx context.Context) {
++	for {
++		fills, err := s.pending.list()
++		if err != nil {
++			log.Warnf("failed to list pending txs: %s", err)
++		}
++		for _, f := range fills {
++			s.resumeOne(ctx, f)
++		}
++		select {
++		case <-ctx.Done():
++			return
++		case <-time.After(pendingResumeInterval):
++		}
++	}
++}
+diff --git a/internal/application/pending_test.go b/internal/application/pending_test.go
+new file mode 100644
+index 0000000..95b488d
+--- /dev/null
++++ b/internal/application/pending_test.go
+@@ -0,0 +1,260 @@
++package application
++
++// [rgb] tests for the durable finalize (pending.go)
++
++import (
++	"context"
++	"fmt"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/arkade-os/arkd/pkg/ark-lib/intent"
++	clientlib "github.com/arkade-os/arkd/pkg/client-lib"
++	"github.com/arkade-os/emulator/pkg/emulator"
++	"github.com/btcsuite/btcd/btcec/v2"
++	"github.com/btcsuite/btcd/psbt/v2"
++	"github.com/stretchr/testify/require"
++)
++
++// the plain fake holds nothing pending
++func (f *fakeArkd) GetPendingTx(context.Context, string, string) ([]clientlib.AcceptedOffchainTx, error) {
++	return nil, nil
++}
++
++// pendingArkd models arkd's pending-tx state on top of fakeArkd: an accepted tx stays pending
++// (its inputs locked) until finalized, a resubmit is "duplicated offchain tx", and GetPendingTx
++// requires a valid intent proof.
++type pendingArkd struct {
++	*fakeArkd
++	t            *testing.T
++	arkdPub      *btcec.PublicKey
++	recordPath   string
++	accepted     map[string][]string
++	loseResponse bool // accept, then fail the call (crash / connection lost)
++	proofs       int
++}
++
++func (p *pendingArkd) SubmitTx(ctx context.Context, arkTx string, cps []string) (string, string, []string, error) {
++	_, err := os.Stat(p.recordPath)
++	require.NoError(p.t, err, "record must be on disk before arkd sees the tx")
++	if _, ok := p.accepted[p.arkTxid]; ok {
++		return "", "", nil, fmt.Errorf("INVALID_ARK_PSBT (5): duplicated offchain tx")
++	}
++	txid, final, arkdCps, err := p.fakeArkd.SubmitTx(ctx, arkTx, cps)
++	if err != nil {
++		return "", "", nil, err
++	}
++	p.accepted[txid] = arkdCps
++	if p.loseResponse {
++		return "", "", nil, fmt.Errorf("connection lost")
++	}
++	return txid, final, arkdCps, nil
++}
++
++func (p *pendingArkd) FinalizeTx(ctx context.Context, txid string, cps []string) error {
++	if err := p.fakeArkd.FinalizeTx(ctx, txid, cps); err != nil {
++		return err
++	}
++	delete(p.accepted, txid)
++	return nil
++}
++
++func (p *pendingArkd) GetPendingTx(_ context.Context, proof, message string) ([]clientlib.AcceptedOffchainTx, error) {
++	p.proofs++
++	if err := intent.Verify(proof, message, []*btcec.PublicKey{p.arkdPub}); err != nil {
++		return nil, err
++	}
++	out := []clientlib.AcceptedOffchainTx{}
++	for txid, cps := range p.accepted {
++		out = append(out, clientlib.AcceptedOffchainTx{Txid: txid, SignedCheckpointTxs: cps})
++	}
++	return out, nil
++}
++
++func newPendingTestService(t *testing.T) (*service, emulator.OffchainTx, *pendingArkd, func() *service) {
++	t.Helper()
++	svc, tx, fake := newTestService(t, true)
++	fake.echoSigs = []bool{false} // arkd answers with only its own countersignature
++	fake.countersign = testArkdCountersig()
++	dir := t.TempDir()
++	store, err := newPendingStore(dir)
++	require.NoError(t, err)
++	svc.pending = store
++	arkd := &pendingArkd{
++		fakeArkd:   fake,
++		t:          t,
++		arkdPub:    svc.arkdPubKey,
++		recordPath: filepath.Join(dir, "pending", tx.ArkTx.UnsignedTx.TxID()+".json"),
++		accepted:   map[string][]string{},
++	}
++	svc.arkd = arkd
++	// restart: a new service on the same datadir and signer
++	restart := func() *service {
++		store, err := newPendingStore(dir)
++		require.NoError(t, err)
++		return &service{Service: svc.Service, arkd: arkd, indexer: svc.indexer,
++			arkdPubKey: svc.arkdPubKey, signerPubKeys: svc.signerPubKeys, pending: store}
++	}
++	return svc, tx, arkd, restart
++}
++
++func recordCount(t *testing.T, s *service) int {
++	t.Helper()
++	fills, err := s.pending.list()
++	require.NoError(t, err)
++	return len(fills)
++}
++
++// finalizedWithArkdSig: the last FinalizeTx got the checkpoints carrying arkd's countersignature
++func finalizedWithArkdSig(t *testing.T, a *pendingArkd) bool {
++	t.Helper()
++	require.NotEmpty(t, a.finalizePayloads)
++	cp, err := psbt.NewFromRawBytes(strings.NewReader(a.finalizePayloads[len(a.finalizePayloads)-1][0]), true)
++	require.NoError(t, err)
++	return hasSignature(cp.Inputs[0].TaprootScriptSpendSig, testArkdCountersig().Signature) &&
++		len(cp.Inputs[0].TaprootScriptSpendSig) >= 2
++}
++
++func shortFinalizeRetry(t *testing.T) {
++	orig := finalizeRetryConfig
++	finalizeRetryConfig = retryConfig{MinAttempts: 2, MaxAttempts: 2, InitialDelay: time.Millisecond, Multiplier: 1}
++	t.Cleanup(func() { finalizeRetryConfig = orig })
++}
++
++func TestPendingFinalize(t *testing.T) {
++	t.Run("record written before submit, removed after finalize", func(t *testing.T) {
++		svc, tx, arkd, _ := newPendingTestService(t)
++		_, err := svc.SubmitTx(t.Context(), tx)
++		require.NoError(t, err)
++		require.Equal(t, 1, arkd.submitCalls)
++		require.Equal(t, 1, arkd.finalizeCalls)
++		require.Empty(t, arkd.accepted)
++		require.Zero(t, recordCount(t, svc))
++	})
++
++	t.Run("finalize retries exhausted: record kept, resume loop finalizes", func(t *testing.T) {
++		shortFinalizeRetry(t)
++		svc, tx, arkd, _ := newPendingTestService(t)
++		arkd.finalizeErrs = []error{fmt.Errorf("unavailable"), fmt.Errorf("unavailable")}
++		_, err := svc.SubmitTx(t.Context(), tx)
++		require.Error(t, err)
++		require.Equal(t, 1, recordCount(t, svc))
++		require.Len(t, arkd.accepted, 1, "inputs locked in arkd")
++
++		ctx, cancel := context.WithCancel(t.Context())
++		cancel() // one pass
++		svc.resumePending(ctx)
++		require.Equal(t, 1, arkd.proofs)
++		require.Equal(t, 3, arkd.finalizeCalls)
++		require.True(t, finalizedWithArkdSig(t, arkd))
++		require.Empty(t, arkd.accepted)
++		require.Zero(t, recordCount(t, svc))
++	})
++
++	t.Run("crash after submit: restart finalizes from the record", func(t *testing.T) {
++		svc, tx, arkd, restart := newPendingTestService(t)
++		arkd.loseResponse = true
++		_, err := svc.SubmitTx(t.Context(), tx)
++		require.ErrorContains(t, err, "connection lost")
++		require.Zero(t, arkd.finalizeCalls)
++
++		svc2 := restart()
++		fills, err := svc2.pending.list()
++		require.NoError(t, err)
++		require.Len(t, fills, 1)
++		svc2.resumeOne(t.Context(), fills[0])
++		require.Equal(t, 1, arkd.finalizeCalls)
++		require.Equal(t, []string{tx.ArkTx.UnsignedTx.TxID()}, arkd.finalizeTxids)
++		require.True(t, finalizedWithArkdSig(t, arkd))
++		require.Empty(t, arkd.accepted)
++		require.Zero(t, recordCount(t, svc2))
++	})
++
++	t.Run("crash after submit: duplicated resubmit completes the tx", func(t *testing.T) {
++		svc, tx, arkd, restart := newPendingTestService(t)
++		resent := cloneOffchainTx(t, tx) // the client sends the same request again
++		arkd.loseResponse = true
++		_, err := svc.SubmitTx(t.Context(), tx)
++		require.Error(t, err)
++		tx = resent
++
++		arkd.loseResponse = false
++		svc2 := restart()
++		out, err := svc2.SubmitTx(t.Context(), tx)
++		require.NoError(t, err)
++		require.Equal(t, tx.ArkTx.UnsignedTx.TxHash(), out.ArkTx.UnsignedTx.TxHash())
++		require.Equal(t, 1, arkd.submitCalls) // the resubmit was rejected as duplicated
++		require.Equal(t, 1, arkd.finalizeCalls)
++		require.True(t, finalizedWithArkdSig(t, arkd))
++		require.Empty(t, arkd.accepted)
++		require.Zero(t, recordCount(t, svc2))
++	})
++
++	t.Run("never accepted by arkd: record dropped, nothing finalized", func(t *testing.T) {
++		svc, tx, arkd, restart := newPendingTestService(t)
++		arkd.submitErr = fmt.Errorf("arkd down")
++		_, err := svc.SubmitTx(t.Context(), tx)
++		require.Error(t, err)
++		require.Equal(t, 1, recordCount(t, svc))
++
++		svc2 := restart()
++		fills, err := svc2.pending.list()
++		require.NoError(t, err)
++		svc2.resumeOne(t.Context(), fills[0])
++		require.Equal(t, 1, arkd.proofs)
++		require.Zero(t, arkd.finalizeCalls)
++		require.Zero(t, recordCount(t, svc2))
++	})
++
++	t.Run("in-flight tx is not submitted twice", func(t *testing.T) {
++		svc, tx, arkd, _ := newPendingTestService(t)
++		require.True(t, svc.pending.claim(tx.ArkTx.UnsignedTx.TxID()))
++		_, err := svc.SubmitTx(t.Context(), tx)
++		require.ErrorContains(t, err, "already being finalized")
++		require.Zero(t, arkd.submitCalls)
++	})
++
++	t.Run("no datadir: no record, same behaviour", func(t *testing.T) {
++		store, err := newPendingStore("")
++		require.NoError(t, err)
++		require.Nil(t, store)
++	})
++}
++
++func TestSignPendingTxProofRejectsOtherIntents(t *testing.T) {
++	svc, tx, _, _ := newPendingTestService(t)
++	cp := tx.Checkpoints[0]
++	msg, err := intent.DeleteMessage{BaseMessage: intent.BaseMessage{Type: intent.IntentMessageTypeDelete}}.Encode()
++	require.NoError(t, err)
++	proof, err := intent.New(msg, []intent.Input{{
++		OutPoint:    &cp.UnsignedTx.TxIn[0].PreviousOutPoint,
++		Sequence:    cp.UnsignedTx.TxIn[0].Sequence,
++		WitnessUtxo: cp.Inputs[0].WitnessUtxo,
++	}}, nil)
++	require.NoError(t, err)
++	for i := range proof.Inputs {
++		proof.Inputs[i].TaprootLeafScript = cp.Inputs[0].TaprootLeafScript
++	}
++	err = svc.Service.SignPendingTxProof(&proof.Packet, []byte{1})
++	require.ErrorContains(t, err, "not a get-pending-tx intent proof")
++	for _, in := range proof.Inputs {
++		require.Empty(t, in.TaprootScriptSpendSig)
++	}
++}
++
++func cloneOffchainTx(t *testing.T, tx emulator.OffchainTx) emulator.OffchainTx {
++	t.Helper()
++	dec := func(p *psbt.Packet) *psbt.Packet {
++		c, err := psbt.NewFromRawBytes(strings.NewReader(encodePacket(t, p)), true)
++		require.NoError(t, err)
++		return c
++	}
++	out := emulator.OffchainTx{ArkTx: dec(tx.ArkTx)}
++	for _, cp := range tx.Checkpoints {
++		out.Checkpoints = append(out.Checkpoints, dec(cp))
++	}
++	return out
++}
+diff --git a/internal/application/service.go b/internal/application/service.go
+index 202cf1f..cfaa96d 100644
+--- a/internal/application/service.go
++++ b/internal/application/service.go
+@@ -5,6 +5,7 @@ import (
+ 	"context"
+ 	"encoding/hex"
+ 	"fmt"
++	"os"
+ 	"strconv"
+ 	"strings"
+ 	"time"
+@@ -25,6 +26,7 @@ import (
+ type arkdClient interface {
+ 	SubmitTx(ctx context.Context, signedArkTx string, checkpointTxs []string) (arkTxid, finalArkTx string, signedCheckpointTxs []string, err error)
+ 	FinalizeTx(ctx context.Context, arkTxid string, finalCheckpointTxs []string) error
++	GetPendingTx(ctx context.Context, proof, message string) ([]clientlib.AcceptedOffchainTx, error)
+ 	Close()
+ }
+ 
+@@ -45,6 +47,8 @@ type service struct {
+ 	indexer       clientlib.Indexer
+ 	arkdPubKey    *btcec.PublicKey
+ 	signerPubKeys []*btcec.PublicKey
++	pending       *pendingStore      // [rgb] nil: no durable finalize
++	stopResume    context.CancelFunc // [rgb]
+ }
+ 
+ // New connects to arkd and builds the emulator service.
+@@ -132,13 +136,23 @@ func New(
+ 	for _, k := range deprecatedKeys {
+ 		signerPubKeys = append(signerPubKeys, k.PubKey())
+ 	}
+-	return &service{
++	svc := &service{
+ 		Service:       lib,
+ 		arkd:          arkd,
+ 		indexer:       versionedIndexer{indexerClient, clientVersion},
+ 		arkdPubKey:    arkdPubKey,
+ 		signerPubKeys: signerPubKeys,
+-	}, nil
++	}
++	// [rgb] durable finalize under $EMULATOR_DATADIR (set to /app/data in the image)
++	if svc.pending, err = newPendingStore(os.Getenv("EMULATOR_DATADIR")); err != nil {
++		return nil, fmt.Errorf("failed to open pending store: %w", err)
++	}
++	if svc.pending != nil {
++		var resumeCtx context.Context
++		resumeCtx, svc.stopResume = context.WithCancel(context.Background())
++		go svc.resumePending(resumeCtx)
++	}
++	return svc, nil
+ }
+ 
+ // SubmitTx executes and signs arkade script for offchain tx
+@@ -197,8 +211,30 @@ func (s *service) SubmitTx(ctx context.Context, tx emulator.OffchainTx) (*emulat
+ 		return nil, fmt.Errorf("failed to encode ark tx for finalization: %w", err)
+ 	}
+ 
++	// [rgb] record the tx before arkd can lock its inputs (see pending.go)
++	rec := pendingFill{ArkTxid: signed.ArkTx.UnsignedTx.TxID(), ArkTx: arkTx, Checkpoints: encodedCheckpoints}
++	if s.pending != nil {
++		if !s.pending.claim(rec.ArkTxid) {
++			return nil, fmt.Errorf("tx %s is already being finalized", rec.ArkTxid)
++		}
++		defer s.pending.release(rec.ArkTxid)
++		if err := s.pending.save(rec); err != nil {
++			return nil, fmt.Errorf("failed to persist pending tx: %w", err)
++		}
++	}
++
+ 	arkdTxid, finalArkTx, arkdCheckpointTxs, err := s.arkd.SubmitTx(ctx, arkTx, encodedCheckpoints)
+ 	if err != nil {
++		// [rgb] already accepted by arkd (e.g. we crashed before finalizing): finish it now
++		if s.pending != nil && strings.Contains(err.Error(), "duplicated offchain tx") {
++			done, cerr := s.completePending(ctx, rec)
++			if cerr != nil || !done {
++				return nil, fmt.Errorf("tx already submitted, completing it failed: %v", cerr)
++			}
++			s.pending.remove(rec.ArkTxid)
++			return &emulator.OffchainTx{ArkTx: signed.ArkTx, Checkpoints: signed.Checkpoints}, nil
++		}
++		// the record stays: the resume loop drops it if arkd holds nothing pending for it
+ 		return nil, fmt.Errorf("failed to submit tx on arkd: %w", err)
+ 	}
+ 
+@@ -270,9 +306,12 @@ func (s *service) SubmitTx(ctx context.Context, tx emulator.OffchainTx) (*emulat
+ 
+ 		// TODO: if retry fails, persist retry task in background queue
+ 		if err := s.retryFinalize(ctx, arkTxid, finalEncodedCheckpoints); err != nil {
+-			return nil, err
++			return nil, err // [rgb] the record stays: the resume loop keeps finalizing it
+ 		}
+ 	}
++	if s.pending != nil {
++		s.pending.remove(rec.ArkTxid)
++	}
+ 
+ 	return &emulator.OffchainTx{
+ 		ArkTx:       finalArkPtx,
+@@ -316,6 +355,9 @@ func (s *service) SubmitFinalization(
+ }
+ 
+ func (s *service) Close() {
++	if s.stopResume != nil {
++		s.stopResume()
++	}
+ 	s.indexer.Close()
+ 	s.arkd.Close()
+ }
+diff --git a/pkg/emulator/pending_proof.go b/pkg/emulator/pending_proof.go
+new file mode 100644
+index 0000000..40e9d92
+--- /dev/null
++++ b/pkg/emulator/pending_proof.go
+@@ -0,0 +1,54 @@
++package emulator
++
++import (
++	"bytes"
++	"fmt"
++
++	"github.com/arkade-os/arkd/pkg/ark-lib/intent"
++	"github.com/arkade-os/emulator/pkg/arkade"
++	"github.com/btcsuite/btcd/btcec/v2/schnorr"
++	"github.com/btcsuite/btcd/psbt/v2"
++	"github.com/btcsuite/btcd/txscript/v2"
++)
++
++// SignPendingTxProof signs every input of a GetPendingTx intent proof with the signer key tweaked
++// by scriptHash. [rgb] The finalizer uses it after a crash to fetch arkd's checkpoint signatures
++// of a tx it submitted but did not finalize. Only proofs carrying a GetPendingTx message are
++// signed; such a proof spends a BIP-322 to_spend tx, so it can never be broadcast.
++func (s *service) SignPendingTxProof(proof *psbt.Packet, scriptHash []byte) error {
++	var msg intent.GetPendingTxMessage
++	var raw []byte
++	for _, u := range proof.Unknowns {
++		if bytes.Equal(u.Key, []byte{0x09}) {
++			raw = u.Value
++		}
++	}
++	if raw == nil || msg.Decode(string(raw)) != nil {
++		return fmt.Errorf("not a get-pending-tx intent proof")
++	}
++	fetcher := txscript.NewMultiPrevOutFetcher(nil)
++	for i, in := range proof.Inputs {
++		if in.WitnessUtxo == nil || len(in.TaprootLeafScript) != 1 {
++			return fmt.Errorf("intent proof input %d: missing witness utxo or leaf", i)
++		}
++		fetcher.AddPrevOut(proof.UnsignedTx.TxIn[i].PreviousOutPoint, in.WitnessUtxo)
++	}
++	for i, in := range proof.Inputs {
++		signed := false
++		for _, sg := range append([]signer{s.signer}, s.activeDeprecatedSigners()...) {
++			tweaked := arkade.ComputeArkadeScriptPublicKey(sg.secretKey.PubKey(), scriptHash)
++			if !bytes.Contains(in.TaprootLeafScript[0].Script, schnorr.SerializePubKey(tweaked)) {
++				continue
++			}
++			if err := sg.signInput(proof, i, scriptHash, fetcher); err != nil {
++				return fmt.Errorf("intent proof input %d: %w", i, err)
++			}
++			signed = true
++			break
++		}
++		if !signed {
++			return fmt.Errorf("intent proof input %d: leaf has no key of this signer", i)
++		}
++	}
++	return nil
++}
+diff --git a/pkg/emulator/rgb_checkpoint_test.go b/pkg/emulator/rgb_checkpoint_test.go
+new file mode 100644
+index 0000000..5276211
+--- /dev/null
++++ b/pkg/emulator/rgb_checkpoint_test.go
+@@ -0,0 +1,70 @@
++package emulator
++
++// [rgb] checkpoint-opret layout: [OP_RETURN <32 bytes> (0 sat), checkpoint output, anchor],
++// the ark input spends vout 1 (arkd master + patches/arkd-checkpoint.patch).
++
++import (
++	"bytes"
++	"testing"
++
++	"github.com/btcsuite/btcd/txscript/v2"
++	"github.com/btcsuite/btcd/wire/v2"
++	"github.com/stretchr/testify/require"
++)
++
++// withCheckpointOpReturn inserts a data OP_RETURN at index 0 of the harness checkpoint
++// and repoints the ark input at the moved checkpoint output.
++func withCheckpointOpReturn(t *testing.T, h *submitTxHarness, value int64, payload []byte) {
++	t.Helper()
++	script, err := txscript.NullDataScript(payload)
++	require.NoError(t, err)
++	tx := h.checkpoint.UnsignedTx
++	tx.TxOut = append([]*wire.TxOut{{Value: value, PkScript: script}}, tx.TxOut...)
++	h.checkpoint.Outputs = append(h.checkpoint.Outputs, h.checkpoint.Outputs[0])
++	h.arkPtx.UnsignedTx.TxIn[0].PreviousOutPoint = wire.OutPoint{Hash: tx.TxHash(), Index: 1}
++}
++
++func TestSubmitTxCheckpointOpReturn(t *testing.T) {
++	commitment := bytes.Repeat([]byte{0xab}, 32)
++
++	t.Run("opret checkpoint, ark input on vout 1, is signed", func(t *testing.T) {
++		h := newSubmitTxHarness(t, tweakedArkd, tweakedArkd)
++		withCheckpointOpReturn(t, h, 0, commitment)
++		res, err := h.submit(t)
++		require.NoError(t, err)
++		require.Len(t, res.Checkpoints[0].Inputs[0].TaprootScriptSpendSig, 1)
++		require.NotEmpty(t, res.ArkTx.Inputs[0].TaprootScriptSpendSig)
++	})
++
++	t.Run("ark input spending the data output is rejected", func(t *testing.T) {
++		h := newSubmitTxHarness(t, tweakedArkd, tweakedArkd)
++		withCheckpointOpReturn(t, h, 0, commitment)
++		h.arkPtx.UnsignedTx.TxIn[0].PreviousOutPoint.Index = 0
++		_, err := h.submit(t)
++		require.Error(t, err)
++	})
++
++	t.Run("valued data output is rejected", func(t *testing.T) {
++		h := newSubmitTxHarness(t, tweakedArkd, tweakedArkd)
++		withCheckpointOpReturn(t, h, 1, commitment)
++		_, err := h.submit(t)
++		require.ErrorContains(t, err, "0-value OP_RETURN <32 bytes>")
++	})
++
++	t.Run("data output not 32 bytes is rejected", func(t *testing.T) {
++		h := newSubmitTxHarness(t, tweakedArkd, tweakedArkd)
++		withCheckpointOpReturn(t, h, 0, commitment[:20])
++		_, err := h.submit(t)
++		require.ErrorContains(t, err, "0-value OP_RETURN <32 bytes>")
++	})
++
++	t.Run("extra output after the anchor is rejected", func(t *testing.T) {
++		h := newSubmitTxHarness(t, tweakedArkd, tweakedArkd)
++		withCheckpointOpReturn(t, h, 0, commitment)
++		h.checkpoint.UnsignedTx.AddTxOut(&wire.TxOut{})
++		h.checkpoint.Outputs = append(h.checkpoint.Outputs, h.checkpoint.Outputs[0])
++		h.arkPtx.UnsignedTx.TxIn[0].PreviousOutPoint.Hash = h.checkpoint.UnsignedTx.TxHash()
++		_, err := h.submit(t)
++		require.ErrorContains(t, err, "one vtxo output and one anchor output")
++	})
++}
+diff --git a/pkg/emulator/service.go b/pkg/emulator/service.go
+index d9cbad6..634195a 100644
+--- a/pkg/emulator/service.go
++++ b/pkg/emulator/service.go
+@@ -69,6 +69,7 @@ type Service interface {
+ 	SubmitIntent(context.Context, Intent, OffchainData) (*psbt.Packet, error)
+ 	SubmitFinalization(context.Context, BatchFinalization) (*SignedBatchFinalization, error)
+ 	SubmitOnchainTx(context.Context, OnchainTx) (*psbt.Packet, error)
++	SignPendingTxProof(proof *psbt.Packet, scriptHash []byte) error // [rgb] crash recovery
+ }
+ 
+ type service struct {
+diff --git a/pkg/emulator/tx.go b/pkg/emulator/tx.go
+index a7fdd48..b8ae64c 100644
+--- a/pkg/emulator/tx.go
++++ b/pkg/emulator/tx.go
+@@ -188,21 +188,27 @@ func validateCheckpoint(
+ 	if checkpoint == nil || checkpoint.UnsignedTx == nil || len(checkpoint.Inputs) != 1 || len(checkpoint.UnsignedTx.TxIn) != 1 {
+ 		return fmt.Errorf("checkpoint must have exactly one input")
+ 	}
+-	if len(checkpoint.UnsignedTx.TxOut) != 2 {
++	// [rgb] optional leading 0-value OP_RETURN <32 bytes> (arkd checkpoint-opret): [opret, cp, anchor]
++	cpVout := checkpointOutputIndex(checkpoint.UnsignedTx)
++	if len(checkpoint.UnsignedTx.TxOut) != 2+int(cpVout) {
+ 		return fmt.Errorf("checkpoint must have one vtxo output and one anchor output")
+ 	}
++	if data := checkpoint.UnsignedTx.TxOut[0]; cpVout == 1 &&
++		(data.Value != 0 || len(data.PkScript) != 34 || data.PkScript[1] != txscript.OP_DATA_32) {
++		return fmt.Errorf("checkpoint data output must be a 0-value OP_RETURN <32 bytes>")
++	}
+ 
+ 	arkOutpoint := arkPtx.UnsignedTx.TxIn[inputIndex].PreviousOutPoint
+ 	if arkOutpoint.Hash != checkpoint.UnsignedTx.TxHash() {
+ 		return fmt.Errorf("ark input does not spend checkpoint")
+ 	}
+-	if arkOutpoint.Index != 0 {
+-		return fmt.Errorf("ark input must spend checkpoint output 0")
++	if arkOutpoint.Index != cpVout {
++		return fmt.Errorf("ark input must spend checkpoint output %d", cpVout)
+ 	}
+ 	if !equalTxOut(arkPtx.Inputs[inputIndex].WitnessUtxo, checkpoint.UnsignedTx.TxOut[arkOutpoint.Index]) {
+ 		return fmt.Errorf("checkpoint output does not match ark input witness utxo")
+ 	}
+-	if !equalTxOut(checkpoint.UnsignedTx.TxOut[1], txutils.AnchorOutput()) {
++	if !equalTxOut(checkpoint.UnsignedTx.TxOut[cpVout+1], txutils.AnchorOutput()) {
+ 		return fmt.Errorf("checkpoint anchor output is invalid")
+ 	}
+ 
+@@ -212,7 +218,7 @@ func validateCheckpoint(
+ 	if !equalTxOut(checkpoint.Inputs[0].WitnessUtxo, previousOutput) {
+ 		return fmt.Errorf("checkpoint input witness utxo does not match previous ark transaction")
+ 	}
+-	if checkpoint.UnsignedTx.TxOut[0].Value != previousOutput.Value {
++	if checkpoint.UnsignedTx.TxOut[cpVout].Value != previousOutput.Value {
+ 		return fmt.Errorf("checkpoint vtxo output value does not match its input")
+ 	}
+ 	// the requester picks the checkpoint output, it must be the one arkd rebuilds
+@@ -220,7 +226,7 @@ func validateCheckpoint(
+ 	if err != nil {
+ 		return err
+ 	}
+-	if !bytes.Equal(checkpoint.UnsignedTx.TxOut[0].PkScript, expectedPkScript) {
++	if !bytes.Equal(checkpoint.UnsignedTx.TxOut[cpVout].PkScript, expectedPkScript) {
+ 		return fmt.Errorf("checkpoint vtxo output is not the arkd checkpoint script")
+ 	}
+ 
+@@ -234,6 +240,14 @@ func validateCheckpoint(
+ 	return nil
+ }
+ 
++// checkpointOutputIndex mirrors arkd's offchain.CheckpointOutputIndex (checkpoint-opret patch).
++func checkpointOutputIndex(tx *wire.MsgTx) uint32 {
++	if len(tx.TxOut) > 1 && len(tx.TxOut[0].PkScript) > 0 && tx.TxOut[0].PkScript[0] == txscript.OP_RETURN {
++		return 1
++	}
++	return 0
++}
++
+ // checkpointPkScript rebuilds the checkpoint output the way offchain.BuildTxs does: the unspendable
+ // key over the arkd unroll leaf and the spent leaf (a two leaf branch sorts its children, order is irrelevant).
+ func checkpointPkScript(arkdCheckpointTapscript []byte, spentLeaf txscript.TapLeaf) ([]byte, error) {

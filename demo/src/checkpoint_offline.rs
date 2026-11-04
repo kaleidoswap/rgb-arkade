@@ -109,7 +109,7 @@ async fn first(ark: &ArkClient, who: &str) -> anyhow::Result<OutPoint> {
 }
 
 /// Watchtower: broadcast every unconfirmed tx of `branch`, each CPFP-bumped through its anchor.
-async fn unroll(wt: &mut Watchtower, regtest: &Regtest, branch: &[Transaction], rec: &mut dyn FnMut(&str, String)) -> anyhow::Result<()> {
+pub(crate) async fn unroll(wt: &mut Watchtower, regtest: &Regtest, branch: &[Transaction], rec: &mut dyn FnMut(&str, String)) -> anyhow::Result<()> {
     for parent in branch {
         let pid = parent.compute_txid();
         if regtest.tx_confirmations(&pid).is_some() {
@@ -234,7 +234,7 @@ pub async fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn settle(gina: &mut RgbWallet, online: &Online, cons: &std::path::Path, asset_id: &str, rec: &mut dyn FnMut(&str, String)) -> anyhow::Result<()> {
+pub(crate) async fn settle(gina: &mut RgbWallet, online: &Online, cons: &std::path::Path, asset_id: &str, rec: &mut dyn FnMut(&str, String)) -> anyhow::Result<()> {
     let mut accepted = None;
     for i in 0..10 {
         match bl(|| gina.provide_out_of_band_consignment(online.clone(), cons.display().to_string(), vec![])) {

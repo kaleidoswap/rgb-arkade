@@ -5,7 +5,7 @@ use crate::batch_scenarios::{forfeit_proof, own};
 use crate::forfeit::{BatchOp, attest_and_register, colored_batch, fund_onchain, mine_until, spend_exited, unilateral_exit};
 use crate::long_offline::{pay_from_rgb_output, vtxo_info};
 use crate::offchain_transfer::{rgb_hop, wait_vtxo};
-use crate::proof::{ProofFile, add_vtxos, arkd_down, build_proof, import, mark_recovery, negatives, operators, proof_path};
+use crate::proof::{add_vtxos, arkd_down, build_proof, import, mark_recovery, negatives, operators, proof_path};
 use crate::{ArkClient, ark_client, ark_client_load, bl, board, now, onchain_genesis_jump_in, regtest, rgb_wallet, rgb_wallet_load};
 use anyhow::{anyhow, bail, ensure};
 use ark_bdk_wallet::Wallet as ArkBdkWallet;
@@ -281,7 +281,7 @@ fn blinding() -> u64 {
 fn carried_witnesses(carried: &[PathBuf]) -> anyhow::Result<Vec<Txid>> {
     let mut ws = vec![];
     for c in carried {
-        let f: ProofFile = serde_json::from_str(&std::fs::read_to_string(c)?)?;
+        let f = crate::proof::load(&c)?;
         ws.extend(f.witnesses.iter().filter_map(|w| Txid::from_str(w).ok()));
     }
     Ok(ws)
@@ -394,7 +394,7 @@ async fn run_action(c: &mut Core, a: &Action, lg: &Logger) -> anyhow::Result<()>
                 onchain_genesis_jump_in(&regtest, &mut w.rgb, &w.online, v, &state, &mut rec).await?
             };
             // track V in rgb-lib's Ark registry (branch from arkd, verified against the chain)
-            let p = state.join(format!("{seq}-track-{who}.arkproof.json"));
+            let p = state.join(format!("{seq}-track-{who}.arkproof.pb"));
             add_vtxos(&w.ark, &regtest, &p, &[v]).await?;
             import(&w.rgb, &w.online, &p, &ops)?;
             own(&w.rgb, v)?;

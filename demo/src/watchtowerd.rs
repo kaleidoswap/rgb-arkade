@@ -1,6 +1,6 @@
 //! Standalone exit-watchtower daemon (`ark-rgb-demo watchtowerd <dir>`).
 //!
-//! * Own state dir: `<dir>/registrations/*.json` (written by wallets before going offline),
+//! * Own state dir: `<dir>/registrations/*.pb` (protobuf `proto/watchtower.proto`, written by wallets before going offline),
 //!   `<dir>/status/<id>.json` (persisted progress, so a restart resumes), `<dir>/daemon.log`.
 //! * Holds NO keys at all. Each registration carries the user's fully signed exit branch plus, per
 //!   branch tx, a *fee ladder*: CPFP children presigned by the user (own fee UTXO, change back to
@@ -40,6 +40,37 @@ pub(crate) struct Registration {
     pub branch: Vec<String>,
     /// one ladder per branch tx (same index), rungs sorted by rate
     pub ladders: Vec<Vec<Rung>>,
+}
+
+impl Registration {
+    /// Wire format: protobuf `rgbarkade.v1.WatchtowerRegistration` (proto/watchtower.proto).
+    pub fn to_bytes(&self) -> anyhow::Result<Vec<u8>> {
+        let w = crate::wire::WatchtowerRegistration {
+            id: self.id.clone(),
+            vtxo: Some(crate::wire::outpoint(&bitcoin::OutPoint::from_str(&self.vtxo)?)),
+            expires_at: self.expires_at,
+            threshold_s: self.threshold_s,
+            branch: self.branch.iter().map(hex::decode).collect::<Result<_, _>>()?,
+            ladders: self
+                .ladders
+                .iter()
+                .map(|l| Ok(crate::wire::Ladder { rungs: l.iter().map(|r| Ok(crate::wire::Rung { rate: r.rate, fee: r.fee, child: hex::decode(&r.child)? })).collect::<anyhow::Result<_>>()? }))
+                .collect::<anyhow::Result<_>>()?,
+        };
+        Ok(prost::Message::encode_to_vec(&w))
+    }
+
+    pub fn from_bytes(b: &[u8]) -> anyhow::Result<Self> {
+        let w: crate::wire::WatchtowerRegistration = prost::Message::decode(b)?;
+        Ok(Registration {
+            id: w.id,
+            vtxo: crate::wire::outpoint_str(&w.vtxo.ok_or_else(|| anyhow::anyhow!("no vtxo"))?)?,
+            expires_at: w.expires_at,
+            threshold_s: w.threshold_s,
+            branch: w.branch.iter().map(hex::encode).collect(),
+            ladders: w.ladders.into_iter().map(|l| l.rungs.into_iter().map(|r| Rung { rate: r.rate, fee: r.fee, child: hex::encode(r.child) }).collect()).collect(),
+        })
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
@@ -267,10 +298,10 @@ pub async fn run_daemon(dir: PathBuf) -> anyhow::Result<()> {
         let mut entries: Vec<_> = std::fs::read_dir(registration_dir(&dir))?.filter_map(|e| e.ok()).map(|e| e.path()).collect();
         entries.sort();
         for p in entries {
-            if p.extension().and_then(|e| e.to_str()) != Some("json") {
+            if p.extension().and_then(|e| e.to_str()) != Some("pb") {
                 continue;
             }
-            let reg: Registration = match std::fs::read_to_string(&p).ok().and_then(|s| serde_json::from_str(&s).ok()) {
+            let reg: Registration = match std::fs::read(&p).ok().and_then(|b| Registration::from_bytes(&b).ok()) {
                 Some(r) => r,
                 None => continue,
             };
@@ -284,5 +315,26 @@ pub async fn run_daemon(dir: PathBuf) -> anyhow::Result<()> {
             std::fs::write(status_path(&dir, &reg.id), serde_json::to_string_pretty(&st)?)?;
         }
         tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registration_protobuf_roundtrip() {
+        let r = Registration {
+            id: "erin-0011aabb".into(),
+            vtxo: "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b:1".into(),
+            expires_at: 1_793_700_000,
+            threshold_s: 600,
+            branch: vec!["0200".into(), "02000000ff".into()],
+            ladders: vec![vec![Rung { rate: 2, fee: 306, child: "0300".into() }, Rung { rate: 20, fee: 3060, child: "03ff".into() }], vec![]],
+        };
+        let b = r.to_bytes().unwrap();
+        let back = Registration::from_bytes(&b).unwrap();
+        assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&r).unwrap());
+        assert!(b.len() < serde_json::to_vec(&r).unwrap().len());
     }
 }

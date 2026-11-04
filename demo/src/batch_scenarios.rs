@@ -36,7 +36,7 @@ type Rec<'a> = dyn FnMut(&str, String) + 'a;
 
 /// Track `vtxos` in `rgb` (their branch from arkd -> proof `vtxos` -> import, chain-verified).
 async fn track(who: &str, client: &ArkClient, regtest: &Regtest, rgb: &RgbWallet, online: &Online, ops: &str, dir: &Path, vtxos: &[OutPoint]) -> anyhow::Result<()> {
-    let p = dir.join(format!("track-{who}-{}.arkproof.json", &vtxos[0].txid.to_string()[..8]));
+    let p = dir.join(format!("track-{who}-{}.arkproof.pb", &vtxos[0].txid.to_string()[..8]));
     add_vtxos(client, regtest, &p, vtxos).await?;
     import(rgb, online, &p, ops)?;
     for v in vtxos {
@@ -64,7 +64,7 @@ pub(crate) async fn forfeit_proof(client: &ArkClient, regtest: &Regtest, fc: &Fo
     let p = proof_path(cons);
     let mut ws: Vec<Txid> = vec![];
     for c in carried {
-        let f: ProofFile = serde_json::from_str(&std::fs::read_to_string(c)?)?;
+        let f = crate::proof::load(&c)?;
         ws.extend(f.witnesses.iter().filter_map(|w| Txid::from_str(w).ok()));
     }
     ws.push(fc.forfeit_tx.compute_txid());
@@ -74,10 +74,10 @@ pub(crate) async fn forfeit_proof(client: &ArkClient, regtest: &Regtest, fc: &Fo
 }
 
 fn copy_with(src: &Path, name: &str, f: impl Fn(&mut ProofFile)) -> anyhow::Result<PathBuf> {
-    let mut pf: ProofFile = serde_json::from_str(&std::fs::read_to_string(src)?)?;
+    let mut pf = crate::proof::load(&src)?;
     f(&mut pf);
-    let out = src.with_extension(format!("neg-{name}.json"));
-    std::fs::write(&out, serde_json::to_string(&pf)?)?;
+    let out = src.with_extension(format!("neg-{name}.pb"));
+    crate::proof::save(&out, &pf)?;
     Ok(out)
 }
 
@@ -419,7 +419,7 @@ pub async fn run_fraud() -> anyhow::Result<()> {
     let p2 = forfeit_proof(&alice, &regtest, &f2, &[], &cons2).await?;
 
     step("5. Erin validates offline: NOT prevented (both receivers hold the 1000)");
-    let fraud_path = state.join("fraud-proof.json");
+    let fraud_path = state.join("fraud-proof.pb");
     {
         let _d = crate::proof::arkd_down(&mut rec, "erin+judge")?;
         import(&erg, &eon, &p2, &ops)?;
@@ -431,9 +431,9 @@ pub async fn run_fraud() -> anyhow::Result<()> {
         rec("erin_ark_balance", bal_str(&be));
 
         step("6. fraud proof: two operator-co-signed forfeits of V (judge, chain only)");
-        let load = |p: &Path| -> anyhow::Result<ArkProof> { Ok(serde_json::from_str(&std::fs::read_to_string(p)?)?) };
+        let load = |p: &Path| -> anyhow::Result<ArkProof> { crate::proof::load(p) };
         let fp = ArkFraudProof { version: 1, vtxo: va.to_string(), forfeit_a: f1id.to_string(), proof_a: load(&p1)?, forfeit_b: f2id.to_string(), proof_b: load(&p2)? };
-        std::fs::write(&fraud_path, serde_json::to_string_pretty(&fp)?)?;
+        std::fs::write(&fraud_path, fp.to_bytes().map_err(|e| anyhow!(e))?)?;
         rec("fraud_proof", format!("{} ({} B)", fraud_path.display(), crate::proof::file_len(&fraud_path)));
         let ev = bl(|| jrg.verify_ark_fraud_proof(jon.clone(), fraud_path.clone(), ops.clone())).map_err(|e| anyhow!("{e}"))?;
         rec("fraud_evidence", format!("{ev:?}"));
@@ -455,8 +455,8 @@ pub async fn run_fraud() -> anyhow::Result<()> {
         let mut other = fp.clone();
         other.vtxo = f1.target.to_string();
         for (n, f) in [("same_forfeit_twice", same), ("second_forfeit_without_operator_sig", stripped), ("forfeits_do_not_spend_claimed_vtxo", other)] {
-            let path = state.join(format!("fraud-neg-{n}.json"));
-            std::fs::write(&path, serde_json::to_string(&f)?)?;
+            let path = state.join(format!("fraud-neg-{n}.pb"));
+            std::fs::write(&path, f.to_bytes().map_err(|e| anyhow!(e))?)?;
             let r = bl(|| jrg.verify_ark_fraud_proof(jon.clone(), path.clone(), ops.clone()));
             rec(&format!("neg_fraud_{n}"), format!("{:?}", r.as_ref().map(|_| "ACCEPTED").map_err(|e| e.to_string())).chars().take(250).collect());
             ensure!(r.is_err(), "{n} accepted");

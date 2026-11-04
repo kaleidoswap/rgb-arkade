@@ -1,0 +1,11 @@
+[package]
+name = "tapret-rgb-check"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+rgb-consensus = "=0.11.1-rc.11"
+bitcoin = "0.32"

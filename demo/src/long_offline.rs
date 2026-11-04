@@ -155,13 +155,15 @@ pub async fn setup(dir: PathBuf) -> anyhow::Result<()> {
             };
             let wdir = wtd_dir(if who == "erin" { "A" } else { "B" });
             std::fs::create_dir_all(registration_dir(&wdir))?;
-            let path = registration_dir(&wdir).join(format!("{}.json", reg.id));
-            let text = serde_json::to_string_pretty(&reg)?;
-            std::fs::write(&path, &text)?;
-            rec(&format!("{who}_registration"), format!("{} ({} B, {} levels x {} rungs, fee utxos {:?})", path.display(), text.len(), reg.ladders.len(), RATES.len(), utxos));
-            // the registration carries no secret
+            let path = registration_dir(&wdir).join(format!("{}.pb", reg.id));
+            let bytes = reg.to_bytes()?;
+            std::fs::write(&path, &bytes)?;
+            let json_len = serde_json::to_vec(&reg)?.len();
+            rec(&format!("{who}_registration"), format!("{} ({} B protobuf, {} B as JSON, {} levels x {} rungs, fee utxos {:?})", path.display(), bytes.len(), json_len, reg.ladders.len(), RATES.len(), utxos));
+            // the registration carries no secret (raw key bytes, hex key, hex seed, raw seed)
             let seed = std::fs::read_to_string(state.join(format!("{who}-ark-seed.hex")))?;
-            let no_secret = !text.contains(&hex::encode(sk.secret_bytes())) && !text.contains(seed.trim());
+            let has = |needle: &[u8]| !needle.is_empty() && bytes.windows(needle.len()).any(|w| w == needle);
+            let no_secret = !has(&sk.secret_bytes()) && !has(hex::encode(sk.secret_bytes()).as_bytes()) && !has(seed.trim().as_bytes()) && !has(&hex::decode(seed.trim()).unwrap_or_default());
             rec(&format!("{who}_registration_has_no_secrets"), no_secret.to_string());
             ensure!(no_secret, "secret leaked into registration");
             if who == "erin" {
@@ -390,8 +392,8 @@ pub async fn return_user(who: &str, dir: PathBuf) -> anyhow::Result<()> {
         }
         "frank" => {
             let branch_leaf_in = {
-                let reg: Registration = serde_json::from_str(&std::fs::read_to_string(
-                    registration_dir(&wtd_dir("B")).join(format!("frank-{}.json", &v.txid.to_string()[..8])),
+                let reg = Registration::from_bytes(&std::fs::read(
+                    registration_dir(&wtd_dir("B")).join(format!("frank-{}.pb", &v.txid.to_string()[..8])),
                 )?)?;
                 let leaf: Transaction = bitcoin::consensus::encode::deserialize_hex(reg.branch.last().unwrap())?;
                 let r = regtest.rpc("testmempoolaccept", serde_json::json!([[reg.branch.last().unwrap()]]))?;

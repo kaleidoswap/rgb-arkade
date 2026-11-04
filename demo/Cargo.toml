@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+prost = "0.14"
 ark-client = { path = "../vendor/rust-sdk/ark-client" }
 ark-core = { path = "../vendor/rust-sdk/ark-core" }
 ark-grpc = { path = "../vendor/rust-sdk/ark-grpc" }
@@ -26,6 +27,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 minreq = { version = "2", features = ["json-using-serde"] }
 libc = "0.2"
+rgb-consensus = { version = "=0.11.1-rc.11", default-features = false }
 
 [profile.dev]
 debug = 0

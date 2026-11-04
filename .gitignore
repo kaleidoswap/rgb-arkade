@@ -14,3 +14,9 @@ __pycache__/
 arkd-image-cponly/arkd
 .DS_Store
 node_modules/
+emulator-image/emulator
+tools/emucov/emucov
+*.arkproof.pb
+*.arkproof.pb.json
+*.arkproof.pb.bin
+arkd-image-master/arkd

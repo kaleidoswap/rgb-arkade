@@ -7,7 +7,7 @@
 //! `scenario sweep-recovery-setup <dir>` / `scenario sweep-recovery-return <dir>`; the orchestrator shortens and restores the
 //! batch expiry and waits for the sweep in between (wallet processes stopped).
 use crate::long_offline::{colored_health, pay_from_rgb_output, receive, vtxo_info};
-use crate::proof::{ProofFile, build_proof, import, operators, proof_path};
+use crate::proof::{build_proof, import, operators, proof_path};
 use crate::forfeit::{BatchOp, colored_batch, first_vtxo, mine_until, summary_rec};
 use crate::{ISSUE_AMOUNT, ark_client, ark_client_load, bl, board, now, onchain_genesis_jump_in, regtest, rgb_wallet, rgb_wallet_load, step};
 use anyhow::{anyhow, ensure};
@@ -50,7 +50,7 @@ pub async fn setup(dir: PathBuf) -> anyhow::Result<()> {
     rec("asset_id", asset_id.clone());
     // track V in rgb-lib (branch from arkd, chain-verified) for the Ark-aware status
     let ops = operators(&alice.server_info().await?);
-    let tp = dir.join("setup/track-v.arkproof.json");
+    let tp = dir.join("setup/track-v.arkproof.pb");
     crate::proof::add_vtxos(&alice, &regtest, &tp, &[v]).await?;
     import(&w, &online, &tp, &ops)?;
     crate::batch_scenarios::own(&w, v)?;
@@ -82,7 +82,7 @@ fn forged_intent(inputs: Vec<intent::Input>, to: ScriptBuf, amount: Amount) -> a
 }
 
 fn mutate(src: &Path, name: &str, fid: Txid, ops: &str, f: impl Fn(&mut Psbt, &[bitcoin::XOnlyPublicKey])) -> anyhow::Result<PathBuf> {
-    let mut pf: ProofFile = serde_json::from_str(&std::fs::read_to_string(src)?)?;
+    let mut pf = crate::proof::load(&src)?;
     let opks: Vec<bitcoin::XOnlyPublicKey> = ops.split(',').map(|k| bitcoin::PublicKey::from_str(k).map(|p| p.inner.x_only_public_key().0)).collect::<Result<_, _>>()?;
     for (i, b) in pf.psbts.clone().iter().enumerate() {
         let mut p = Psbt::from_str(b)?;
@@ -97,8 +97,8 @@ fn mutate(src: &Path, name: &str, fid: Txid, ops: &str, f: impl Fn(&mut Psbt, &[
             }
         }
     }
-    let out = src.with_extension(format!("neg-{name}.json"));
-    std::fs::write(&out, serde_json::to_string(&pf)?)?;
+    let out = src.with_extension(format!("neg-{name}.pb"));
+    crate::proof::save(&out, &pf)?;
     Ok(out)
 }
 
@@ -208,7 +208,7 @@ pub async fn return_user(dir: PathBuf) -> anyhow::Result<()> {
     let ad = pay_from_rgb_output("alice", &mut rgb, &online, &regtest, fc2.target, EXIT_SAT, cid, ISSUE_AMOUNT, to, 7777, &cons).await?;
     rec("alice_to_dave_txid", ad.to_string());
     let st = build_proof(&alice, &regtest, &[fid, fid2, ad], &[proof_path(&own2)], &proof_path(&cons)).await?;
-    let pf: crate::proof::ProofFile = serde_json::from_str(&std::fs::read_to_string(proof_path(&cons))?)?;
+    let pf = crate::proof::load(&proof_path(&cons))?;
     rec("proof_ad_recoveries_carried", format!("{:?}", pf.recoveries));
     rec("proof_ad", format!("{} B, {} PSBTs, txids {:?}", st.bytes, st.n_psbts, crate::proof::psbt_txids(&proof_path(&cons))?));
 

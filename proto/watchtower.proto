@@ -1,0 +1,26 @@
+// Registration a wallet hands to the exit watchtower before going offline (demo watchtowerd,
+// `<dir>/registrations/<id>.pb`). Rust types: demo/src/wire.rs. Only public, already-signed txs.
+syntax = "proto3";
+
+package rgbarkade.v1;
+
+import "ark_proof.proto";
+
+message Rung {
+  uint64 rate = 1;                     // sat/vB
+  uint64 fee = 2;                      // sat
+  bytes child = 3;                     // raw presigned fee child (CPFP of the branch tx's P2A)
+}
+
+message Ladder {
+  repeated Rung rungs = 1;             // sorted by rate
+}
+
+message WatchtowerRegistration {
+  string id = 1;
+  OutPoint vtxo = 2;
+  int64 expires_at = 3;                // unix time
+  int64 threshold_s = 4;               // start unrolling this long before expiry
+  repeated bytes branch = 5;           // raw signed branch txs, root first
+  repeated Ladder ladders = 6;         // one per branch tx (same index)
+}

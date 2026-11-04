@@ -4,7 +4,9 @@
 //! merge (k on-chain inputs from k senders merged into one payment), onchain (n mined hops).
 //! Every measurement row goes to `<dir>/<phase>.jsonl`. With `--pause` arkd is paused while the
 //! verifier wallets validate (proof verification never talks to arkd).
-//! Also implements the compact binary proof (`.arkproof.bin`): only what the verifier reads
+//! Proof sizes are reported for the protobuf file (`.arkproof.pb`), the legacy JSON encoding of the
+//! same proof (`.arkproof.pb.json`) and the compact binary proof (`.arkproof.pb.bin`).
+//! Also implements the compact binary proof: only what the verifier reads
 //! (unsigned tx, key-path sig, the one signed leaf + control block + sigs in script key order).
 use crate::proof::{ProofFile, build_proof, file_len, import, operators, proof_path};
 use crate::offchain_transfer::{rgb_hop, wait_vtxo};
@@ -167,14 +169,17 @@ fn compressed(path: &Path, tool: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// sizes of the proof in all encodings (+ writes the .bin next to it)
-fn proof_sizes(json: &Path) -> anyhow::Result<serde_json::Value> {
-    if !json.exists() {
-        return Ok(serde_json::json!({"json": 0}));
+/// sizes of the proof in all encodings: protobuf (the file), legacy JSON and compact binary
+/// (both written next to it, same content)
+fn proof_sizes(pbp: &Path) -> anyhow::Result<serde_json::Value> {
+    if !pbp.exists() {
+        return Ok(serde_json::json!({"json": 0, "pb": 0}));
     }
-    let pf: ProofFile = serde_json::from_str(&std::fs::read_to_string(json)?)?;
+    let pf = crate::proof::load(pbp)?;
+    let json = &PathBuf::from(format!("{}.json", pbp.display()));
+    std::fs::write(json, serde_json::to_string(&pf)?)?;
     let bin = compact_encode(&pf)?;
-    let binp = PathBuf::from(format!("{}.bin", json.display()));
+    let binp = PathBuf::from(format!("{}.bin", pbp.display()));
     std::fs::write(&binp, &bin)?;
     // round trip must give the same txs + verifier-relevant data
     let back = compact_decode(&bin)?;
@@ -183,6 +188,7 @@ fn proof_sizes(json: &Path) -> anyhow::Result<serde_json::Value> {
     Ok(serde_json::json!({
         "n_psbts": pf.psbts.len(),
         "json": file_len(json), "json_gz": compressed(json, "gzip"), "json_xz": compressed(json, "xz"),
+        "pb": file_len(pbp), "pb_gz": compressed(pbp, "gzip"), "pb_xz": compressed(pbp, "xz"),
         "bin": bin.len(), "bin_gz": compressed(&binp, "gzip"), "bin_xz": compressed(&binp, "xz"),
         "unsigned_tx_bytes": raw_tx,
     }))
@@ -198,8 +204,9 @@ async fn time_validation(tag: &str, state: &Path, cons: &Path, ops: &str, rec_do
     let has_proof = p.exists() && !crate::proof::psbt_txids(&p)?.is_empty();
     let (v1, on1) = bl(|| rgb_wallet(&format!("ver-{tag}-a"), state))?;
     let (v2, on2) = bl(|| rgb_wallet(&format!("ver-{tag}-b"), state))?;
+    let (v3, on3) = bl(|| rgb_wallet(&format!("ver-{tag}-c"), state))?;
     let _down = if rec_down { Some(crate::proof::arkd_down(&mut |_k: &str, _v: String| {}, tag)?) } else { None };
-    // cold, JSON proof
+    // cold, protobuf proof (the file)
     let t = Instant::now();
     if has_proof {
         import(&v1, &on1, &p, ops)?;
@@ -223,13 +230,22 @@ async fn time_validation(tag: &str, state: &Path, cons: &Path, ops: &str, rec_do
     if has_proof {
         let bin = std::fs::read(format!("{}.bin", p.display()))?;
         let pf = compact_decode(&bin)?;
-        let tmp = PathBuf::from(format!("{}.decoded.json", p.display()));
-        std::fs::write(&tmp, serde_json::to_string(&pf)?)?;
+        let tmp = PathBuf::from(format!("{}.decoded.pb", p.display()));
+        crate::proof::save(&tmp, &pf)?;
         import(&v2, &on2, &tmp, ops)?;
     }
     bl(|| v2.validate_consignment_ark(on2.clone(), cons.to_path_buf(), true))?;
     let t_cold_bin = t.elapsed().as_secs_f64() * 1e3;
-    Ok(serde_json::json!({"cold_ms": t_cold, "import_ms": t_import, "warm_ms": t_warm, "cons_only_ms": t_cons_only, "cold_bin_ms": t_cold_bin, "arkd_paused": rec_down}))
+    // cold, legacy JSON proof (same content; written by proof_sizes)
+    let t = Instant::now();
+    let jp = PathBuf::from(format!("{}.json", p.display()));
+    if has_proof {
+        import(&v3, &on3, &jp, ops)?;
+    }
+    let t_import_json = t.elapsed().as_secs_f64() * 1e3;
+    bl(|| v3.validate_consignment_ark(on3.clone(), cons.to_path_buf(), true))?;
+    let t_cold_json = t.elapsed().as_secs_f64() * 1e3;
+    Ok(serde_json::json!({"cold_ms": t_cold, "import_ms": t_import, "warm_ms": t_warm, "cons_only_ms": t_cons_only, "cold_bin_ms": t_cold_bin, "cold_json_ms": t_cold_json, "import_json_ms": t_import_json, "arkd_paused": rec_down}))
 }
 
 fn row(dir: &Path, phase: &str, v: serde_json::Value) -> anyhow::Result<()> {
@@ -287,7 +303,7 @@ pub async fn run(dir: PathBuf, phase: &str, n: usize) -> anyhow::Result<()> {
                 let t_build = t.elapsed().as_secs_f64() * 1e3;
                 let sizes = proof_sizes(&proof_path(&hop.consignment))?;
                 // receiver cache: txs the receiver already verified in earlier hops
-                let pf: ProofFile = serde_json::from_str(&std::fs::read_to_string(proof_path(&hop.consignment))?)?;
+                let pf = crate::proof::load(&proof_path(&hop.consignment))?;
                 let ri = if s_is_a { 1 } else { 0 };
                 let new_psbts: Vec<&String> = pf.psbts.iter().filter(|p| !seen_by[ri].contains(*p)).collect();
                 let incr_bytes: usize = new_psbts.iter().map(|p| p.len()).sum();

@@ -251,11 +251,16 @@ pub async fn run_watchtower() -> anyhow::Result<()> {
     let [(_, _, va, alice_rgb, _alice_online, asset_a, branch_a), (_, _, ve, mut erin_rgb, erin_online, asset_e, branch_e), (_, _, vf, frank_rgb, _frank_online, asset_f, branch_f)] =
         <[_; 3]>::try_from(users).map_err(|_| anyhow!("users"))?;
     // the registration the user would hand to the watchtower: public, already-signed txs only
-    let reg = serde_json::json!({
-        "alice": {"vtxo": va.to_string(), "branch": branch_a.iter().map(bitcoin::consensus::encode::serialize_hex).collect::<Vec<_>>()},
-        "frank": {"vtxo": vf.to_string(), "branch": branch_f.iter().map(bitcoin::consensus::encode::serialize_hex).collect::<Vec<_>>()},
-    });
-    std::fs::write(state.join("watchtower-registration.json"), serde_json::to_string_pretty(&reg)?)?;
+    // (protobuf rgbarkade.v1.WatchtowerRegistration, vtxo + branch only; this scenario has no fee ladders)
+    for (who, v, branch) in [("alice", &va, &branch_a), ("frank", &vf, &branch_f)] {
+        let reg = crate::wire::WatchtowerRegistration {
+            id: who.into(),
+            vtxo: Some(crate::wire::outpoint(v)),
+            branch: branch.iter().map(bitcoin::consensus::encode::serialize).collect(),
+            ..Default::default()
+        };
+        std::fs::write(state.join(format!("watchtower-registration-{who}.pb")), prost::Message::encode_to_vec(&reg))?;
+    }
     let mut wt = Watchtower::new(&regtest).await?;
     rec("wt_fee_utxo", format!("{} {}", wt.utxo.0, wt.utxo.1));
 

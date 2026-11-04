@@ -1,15 +1,18 @@
 # rgb-arkade: common tasks. See README.md.
 SCENARIO ?= offchain-transfer
 
-.PHONY: help setup setup-cponly build regtest-up regtest-up-fast regtest-up-cponly regtest-down app scenario test test-all test-full bench patches-check list
+.PHONY: help setup setup-cponly setup-master setup-emulator build regtest-up regtest-up-fast regtest-up-cponly regtest-up-master regtest-down app scenario test test-all test-full bench patches-check list
 
 help:
 	@echo "make setup        clone pinned upstreams, apply patches, build arkd:rgb, tools/arkdb and the demo"
 	@echo "make setup-cponly build arkd:rgb-cponly (arkd master + only the checkpoint OP_RETURN), after make setup"
+	@echo "make setup-master build arkd:rgb-master (arkd master + checkpoint, forfeit and data OP_RETURN), after make setup"
+	@echo "make setup-emulator build emulator:rgb (patched arkade-os/emulator) and tools/emucov"
 	@echo "make build        build the demo (cargo build in demo/)"
 	@echo "make regtest-up   start the regtest stack (arkd:rgb + bitcoind + electrs + pools mirror)"
 	@echo "make regtest-up-fast  restart the stack clean with exit delays in blocks (quick suite in minutes, no time-scaled scenarios)"
 	@echo "make regtest-up-cponly  restart the stack clean on arkd:rgb-cponly, for the checkpoint-* scenarios"
+	@echo "make regtest-up-master  restart the stack clean on arkd:rgb-master"
 	@echo "make regtest-down stop the regtest stack"
 	@echo "make app          start the regtest stack if needed and serve the prototype app on :8080 (PORT=...)"
 	@echo "make list         list scenarios"
@@ -26,6 +29,12 @@ setup:
 setup-cponly:
 	scripts/setup-cponly.sh
 
+setup-master:
+	scripts/setup-master.sh
+
+setup-emulator:
+	scripts/setup-emulator.sh
+
 build:
 	cd demo && cargo build
 
@@ -37,6 +46,9 @@ regtest-up-fast:
 
 regtest-up-cponly:
 	REGTEST_PROFILE=cponly scripts/regtest-up.sh clean
+
+regtest-up-master:
+	REGTEST_PROFILE=master scripts/regtest-up.sh clean
 
 regtest-down:
 	cd arkade-regtest && node regtest.mjs stop; docker rm -f rgbarkade-pools >/dev/null 2>&1 || true

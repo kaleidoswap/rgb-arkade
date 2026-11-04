@@ -1,0 +1,122 @@
+# arkd master f863e48: changes C (forfeit-opret) and A (opret-data-output), applied on top of
+# patches/arkd-checkpoint.patch (change B). Image arkd:rgb-master, see scripts/setup-master.sh.
+#
+# forfeit-opret: optional 0-sat OP_RETURN <32B> at index 0 of the forfeit tx
+#   .../infrastructure/tx-builder/covenantless/builder.go   | 17 +++++++++++++++++
+#   1 file changed, 17 insertions(+)
+#
+# opret-data-output: 0-sat OP_RETURN <32B> data output in the ark tx (not a VTXO)
+#   internal/core/application/service.go  | 13 +++++++++++++
+#   internal/core/application/utils.go    |  3 ++-
+#   internal/infrastructure/db/service.go |  5 +++--
+#   pkg/ark-lib/script/script.go          |  7 +++++++
+#   4 files changed, 25 insertions(+), 3 deletions(-)
+
+diff --git a/internal/core/application/service.go b/internal/core/application/service.go
+index 7f1a488e..e98e6ce3 100644
+--- a/internal/core/application/service.go
++++ b/internal/core/application/service.go
+@@ -4916,6 +4916,7 @@ func validateOffchainTxOutputs(
+ 	outputs := make([]*wire.TxOut, 0)
+ 	foundAnchor := false
+ 	foundExtension := false
++	foundDataOpReturn := false
+ 	ext := make(extension.Extension, 0)
+ 	opRetCount := 0
+ 
+@@ -4963,6 +4964,18 @@ func validateOffchainTxOutputs(
+ 			continue
+ 		}
+ 
++		// at most one 0-sat OP_RETURN <32B> data output, not a VTXO (still counts as OP_RETURN)
++		if script.IsDataOpReturn(out.Value, out.PkScript) {
++			if foundDataOpReturn {
++				return nil, nil, errors.MALFORMED_ARK_TX.New(
++					"tx %s has multiple data OP_RETURN outputs", txid,
++				).WithMetadata(errors.PsbtMetadata{Tx: signedArkTx})
++			}
++			foundDataOpReturn = true
++			outputs = append(outputs, out)
++			continue
++		}
++
+ 		// handle non-extension OP_RETURN outputs
+ 		if len(out.PkScript) > 0 && out.PkScript[0] == txscript.OP_RETURN {
+ 			// subdust OP_RETURN: must have value < dust
+diff --git a/internal/core/application/utils.go b/internal/core/application/utils.go
+index caf28cd0..973bc902 100644
+--- a/internal/core/application/utils.go
++++ b/internal/core/application/utils.go
+@@ -131,7 +131,8 @@ func decodeTx(offchainTx domain.OffchainTx) (string, []domain.Outpoint, []domain
+ 	outs := make([]domain.Vtxo, 0, len(ptx.UnsignedTx.TxOut))
+ 	for outIndex, out := range ptx.UnsignedTx.TxOut {
+ 		if bytes.Equal(out.PkScript, txutils.ANCHOR_PKSCRIPT) ||
+-			extension.IsExtension(out.PkScript) {
++			extension.IsExtension(out.PkScript) ||
++			script.IsDataOpReturn(out.Value, out.PkScript) {
+ 			continue
+ 		}
+ 		if len(out.PkScript) < 2 {
+diff --git a/internal/infrastructure/db/service.go b/internal/infrastructure/db/service.go
+index c5d26903..8cf3fa00 100644
+--- a/internal/infrastructure/db/service.go
++++ b/internal/infrastructure/db/service.go
+@@ -687,9 +687,10 @@ func (s *service) updateProjectionsAfterOffchainTxEvents(events []domain.Event)
+ 			createdDustMarkerIDs := make([]string, 0)
+ 			sweptOutpoints := make([]domain.Outpoint, 0)
+ 			for outIndex, out := range outs {
+-				// ignore anchor and extension
++				// ignore anchor, extension and the 0-sat data OP_RETURN (not a VTXO)
+ 				if bytes.Equal(out.PkScript, txutils.ANCHOR_PKSCRIPT) ||
+-					extension.IsExtension(out.PkScript) {
++					extension.IsExtension(out.PkScript) ||
++					script.IsDataOpReturn(int64(out.Amount), out.PkScript) {
+ 					continue
+ 				}
+ 
+diff --git a/internal/infrastructure/tx-builder/covenantless/builder.go b/internal/infrastructure/tx-builder/covenantless/builder.go
+index f6cad19f..be2ecf87 100644
+--- a/internal/infrastructure/tx-builder/covenantless/builder.go
++++ b/internal/infrastructure/tx-builder/covenantless/builder.go
+@@ -495,6 +495,23 @@ func (b *txBuilder) VerifyForfeitTxs(
+ 			return nil, err
+ 		}
+ 
++		// optional user OP_RETURN (32 B) at index 0 of the forfeit tx; the rebuild reproduces
++		// it, so any other modification still fails the txid check below.
++		forfeitOpReturn, err := script.ExtractDataOpReturn(tx.UnsignedTx)
++		if err != nil {
++			return nil, fmt.Errorf("invalid forfeit tx %s: %s", tx.UnsignedTx.TxID(), err)
++		}
++		if len(forfeitOpReturn) > 0 {
++			opret, err := txscript.NullDataScript(forfeitOpReturn)
++			if err != nil {
++				return nil, err
++			}
++			rebuilt.UnsignedTx.TxOut = append(
++				[]*wire.TxOut{{Value: 0, PkScript: opret}}, rebuilt.UnsignedTx.TxOut...,
++			)
++			rebuilt.Outputs = append([]psbt.POutput{{}}, rebuilt.Outputs...)
++		}
++
+ 		if rebuilt.UnsignedTx.TxID() != tx.UnsignedTx.TxID() {
+ 			if log.IsLevelEnabled(log.TraceLevel) {
+ 				rebuiltB64, _ := rebuilt.B64Encode()
+diff --git a/pkg/ark-lib/script/script.go b/pkg/ark-lib/script/script.go
+index 9555a4a2..06436b88 100644
+--- a/pkg/ark-lib/script/script.go
++++ b/pkg/ark-lib/script/script.go
+@@ -134,6 +134,13 @@ func DataOpReturn(payload []byte) (*wire.TxOut, error) {
+ 	return &wire.TxOut{Value: 0, PkScript: pkScript}, nil
+ }
+ 
++// IsDataOpReturn reports a 0-sat OP_RETURN <32B> data output (e.g. an RGB commitment in an ark
++// tx): a data output, never a (sub-dust) VTXO.
++func IsDataOpReturn(value int64, pkScript []byte) bool {
++	return value == 0 && len(pkScript) == 2+DataOpReturnSize &&
++		pkScript[0] == txscript.OP_RETURN && pkScript[1] == txscript.OP_DATA_32
++}
++
+ // ExtractDataOpReturn returns the payload of the optional data OP_RETURN of a checkpoint or
+ // forfeit tx (nil if there is none). Any other OP_RETURN, or more than one, is an error.
+ func ExtractDataOpReturn(tx *wire.MsgTx) ([]byte, error) {

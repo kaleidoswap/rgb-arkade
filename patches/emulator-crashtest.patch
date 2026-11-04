@@ -1,0 +1,19 @@
+diff --git a/internal/application/service.go b/internal/application/service.go
+--- a/internal/application/service.go
++++ b/internal/application/service.go
+@@ -223,7 +223,15 @@
+ 		}
+ 	}
+ 
++	if os.Getenv("EMULATOR_RGB_TEST_CRASH") == "before" { // [rgb] fault injection, test image only
++		log.WithField("txid", rec.ArkTxid).Error("[rgb test] crash before arkd SubmitTx")
++		os.Exit(3)
++	}
+ 	arkdTxid, finalArkTx, arkdCheckpointTxs, err := s.arkd.SubmitTx(ctx, arkTx, encodedCheckpoints)
++	if err == nil && os.Getenv("EMULATOR_RGB_TEST_CRASH") == "after" { // [rgb] fault injection
++		log.WithField("txid", arkdTxid).Error("[rgb test] crash after arkd SubmitTx")
++		os.Exit(3)
++	}
+ 	if err != nil {
+ 		// [rgb] already accepted by arkd (e.g. we crashed before finalizing): finish it now
+ 		if s.pending != nil && strings.Contains(err.Error(), "duplicated offchain tx") {

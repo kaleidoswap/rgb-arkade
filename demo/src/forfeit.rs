@@ -615,11 +615,11 @@ pub async fn run_exit() -> anyhow::Result<()> {
     let fid = fc.forfeit_tx.compute_txid();
     if offline {
         // NEG: proof built while the commitment tx C is still unmined (C itself left out)
-        let early = state.join("exit_forfeit.rgbc.early.arkproof.json");
+        let early = state.join("exit_forfeit.rgbc.early.arkproof.pb");
         crate::proof::build_proof(&alice, &regtest, &[fid], &[], &early).await?;
-        let mut f: crate::proof::ProofFile = serde_json::from_str(&std::fs::read_to_string(&early)?)?;
+        let mut f = crate::proof::load(&early)?;
         f.psbts.retain(|b| Psbt::from_str(b).map(|p| p.unsigned_tx.compute_txid() != c).unwrap_or(true));
-        std::fs::write(&early, serde_json::to_string(&f)?)?;
+        crate::proof::save(&early, &f)?;
         let ops = crate::proof::operators(&dave.server_info().await?);
         let r = crate::proof::import(&dave_rgb, &dave_online, &early, &ops);
         println!("[dave] NEG proof unmined_commitment (C={c} confs {:?}): {:?}", regtest.tx_confirmations(&c), r.as_ref().map_err(|e| e.to_string()));

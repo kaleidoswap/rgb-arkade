@@ -260,7 +260,7 @@ pub async fn run() -> anyhow::Result<()> {
     let asset_id = onchain_genesis_jump_in(&regtest, &mut alice_rgb, &alice_online, av, &state, &mut |k, v| println!("  >> {k} = {v}")).await?;
     rec("asset_id", asset_id.clone());
     let contract_id = ContractId::from_str(&asset_id).map_err(|e| anyhow!("{e}"))?;
-    let p = state.join("track-alice.arkproof.json");
+    let p = state.join("track-alice.arkproof.pb");
     add_vtxos(&alice, &regtest, &p, &[av]).await?;
     let ops = operators(&alice.server_info().await?);
     import(&alice_rgb, &alice_online, &p, &ops)?;

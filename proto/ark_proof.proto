@@ -1,0 +1,33 @@
+// Out-of-band Ark proof formats (rgb-arkade). Rust types: vendor/rgb-lib/src/ark_proof.rs (`pb` module,
+// prost derives that mirror this file field by field; scripts/proto-check.sh cross-checks them).
+//
+// Conventions: txids are 32 raw bytes in consensus (internal) byte order, i.e. the reverse of the
+// usual hex; PSBTs are raw BIP-174 serializations; no base64 or hex anywhere.
+syntax = "proto3";
+
+package rgbarkade.v1;
+
+message OutPoint {
+  bytes txid = 1;  // 32 bytes
+  uint32 vout = 2;
+}
+
+// Sidecar of a consignment (`<consignment>.arkproof.pb`): the PSBTs of the unmined RGB witnesses
+// that are Arkade virtual txs and of every unmined ancestor down to a mined tx.
+message ArkProof {
+  uint32 version = 1;               // 1
+  repeated bytes witnesses = 2;     // txids
+  repeated bytes psbts = 3;         // raw PSBTs
+  repeated bytes recoveries = 4;    // txids of sweep-recovery forfeits (subset of witnesses)
+  repeated OutPoint vtxos = 5;      // VTXOs whose branch is bundled (liveness tracking)
+}
+
+// Two conflicting forfeits of the same VTXO, each with its own proof.
+message ArkFraudProof {
+  uint32 version = 1;               // 1
+  OutPoint vtxo = 2;
+  bytes forfeit_a = 3;              // txid
+  ArkProof proof_a = 4;
+  bytes forfeit_b = 5;              // txid
+  ArkProof proof_b = 6;
+}

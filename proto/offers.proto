@@ -1,0 +1,34 @@
+// Offer files published by a maker (demo scenarios swap-ni and swap-emu). Rust types:
+// demo/src/wire.rs (prost derives mirroring this file). Same conventions as ark_proof.proto: raw
+// bytes for txids (consensus order), keys, signatures, scripts and PSBTs.
+syntax = "proto3";
+
+package rgbarkade.v1;
+
+import "ark_proof.proto";
+
+// swap-ni: presigned SIGHASH_SINGLE|ANYONECANPAY offer (`offer.pb`).
+message SwapNiOffer {
+  bytes checkpoint_psbt_unsigned = 1;  // V's checkpoint, maker signature stripped
+  bytes template_psbt = 2;             // fill template; input 1 carries the maker's SINGLE|ACP sig
+  bytes t2_opret = 3;                  // 32-byte RGB commitment of T2
+  uint64 sell_units = 4;
+  uint64 price_sat = 5;
+  string asset = 6;                    // RGB contract id
+}
+
+// swap-emu: covenant offer co-signed by the Arkade emulator (`offer.pb`).
+message SwapEmuOffer {
+  OutPoint v = 1;                      // the offer VTXO
+  bytes covenant = 2;                  // Arkade Script (122 B)
+  uint32 cancel_height = 3;            // CLTV of the cancel leaf
+  bytes maker_xonly = 4;               // 32 bytes
+  bytes emulator_pubkey = 5;           // 33 bytes
+  bytes c1 = 6;                        // 32 bytes, RGB commitment of T1 (checkpoint)
+  bytes c2 = 7;                        // 32 bytes, RGB commitment of T2 (ark tx)
+  bytes maker_sig = 8;                 // 64 bytes, BIP340 over sha256(c1 || c2 || v)
+  bytes template_psbt = 9;             // T2 coloring template
+  uint64 sell_units = 10;
+  uint64 price_sat = 11;
+  string asset = 12;                   // RGB contract id
+}

@@ -1,12 +1,24 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 8e2ce26..4a501ac 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -62,6 +62,7 @@ serde = { version = "^1.0", default-features = false, features = [
+ serde_json = { version = "^1.0", default-features = false, features = [
+     "preserve_order",
+ ] }
++prost = { version = "0.14", default-features = false, features = ["std", "derive"] } # [rgb-arkade] proof wire format
+ slog = { version = "2.8.2", default-features = false }
+ slog-async = { version = "2.8.0", default-features = false }
+ slog-term = { version = "2.9.2", default-features = false }
 diff --git a/src/ark_proof.rs b/src/ark_proof.rs
 new file mode 100644
-index 0000000..d1f75f9
+index 0000000..8290526
 --- /dev/null
 +++ b/src/ark_proof.rs
-@@ -0,0 +1,1023 @@
+@@ -0,0 +1,1238 @@
 +//! [rgb-arkade] Self-contained Ark proofs for unmined RGB witnesses.
 +//!
-+//! A proof (`*.arkproof.json`, sidecar of a consignment) lists the RGB witness txids that are
++//! A proof (`*.arkproof.pb`, protobuf `proto/ark_proof.proto`, sidecar of a consignment) lists the RGB witness txids that are
 +//! Arkade virtual txs (checkpoint, ark tx, forfeit) and the PSBTs of every virtual tx needed to
 +//! link them to a *mined* tx (normally a batch commitment tx). Verification uses only the proof
 +//! and the blockchain resolver, never arkd:
@@ -46,9 +58,164 @@ index 0000000..d1f75f9
 +};
 +
 +/// Sidecar file suffix appended to the consignment path.
-+pub const ARK_PROOF_SUFFIX: &str = ".arkproof.json";
++pub const ARK_PROOF_SUFFIX: &str = ".arkproof.pb";
 +
-+/// Self-contained Ark proof bundle (JSON sidecar of a consignment).
++/// [rgb-arkade] Wire format: protobuf messages of `proto/ark_proof.proto` (prost derives, kept
++/// in sync with the .proto by hand; field numbers are the contract). Txids are 32 raw bytes in
++/// consensus order, PSBTs raw BIP-174 bytes.
++pub mod pb {
++    /// `rgbarkade.v1.OutPoint`
++    #[derive(Clone, PartialEq, prost::Message)]
++    pub struct OutPoint {
++        /// txid, 32 bytes, consensus order
++        #[prost(bytes = "vec", tag = "1")]
++        pub txid: Vec<u8>,
++        /// output index
++        #[prost(uint32, tag = "2")]
++        pub vout: u32,
++    }
++    /// `rgbarkade.v1.ArkProof`
++    #[derive(Clone, PartialEq, prost::Message)]
++    pub struct ArkProof {
++        /// format version (1)
++        #[prost(uint32, tag = "1")]
++        pub version: u32,
++        /// witness txids
++        #[prost(bytes = "vec", repeated, tag = "2")]
++        pub witnesses: Vec<Vec<u8>>,
++        /// raw PSBTs
++        #[prost(bytes = "vec", repeated, tag = "3")]
++        pub psbts: Vec<Vec<u8>>,
++        /// recovery forfeit txids
++        #[prost(bytes = "vec", repeated, tag = "4")]
++        pub recoveries: Vec<Vec<u8>>,
++        /// tracked VTXOs
++        #[prost(message, repeated, tag = "5")]
++        pub vtxos: Vec<OutPoint>,
++    }
++    /// `rgbarkade.v1.ArkFraudProof`
++    #[derive(Clone, PartialEq, prost::Message)]
++    pub struct ArkFraudProof {
++        /// format version (1)
++        #[prost(uint32, tag = "1")]
++        pub version: u32,
++        /// the double-forfeited VTXO
++        #[prost(message, optional, tag = "2")]
++        pub vtxo: Option<OutPoint>,
++        /// first forfeit txid
++        #[prost(bytes = "vec", tag = "3")]
++        pub forfeit_a: Vec<u8>,
++        /// its proof
++        #[prost(message, optional, tag = "4")]
++        pub proof_a: Option<ArkProof>,
++        /// second forfeit txid
++        #[prost(bytes = "vec", tag = "5")]
++        pub forfeit_b: Vec<u8>,
++        /// its proof
++        #[prost(message, optional, tag = "6")]
++        pub proof_b: Option<ArkProof>,
++    }
++}
++
++fn pb_txid(s: &str) -> Result<Vec<u8>, String> {
++    use bdk_wallet::bitcoin::hashes::Hash;
++    Ok(ProofTxid::from_str(s).map_err(|e| format!("txid {s}: {e}"))?.to_byte_array().to_vec())
++}
++
++fn pb_txid_str(b: &[u8]) -> Result<String, String> {
++    use bdk_wallet::bitcoin::hashes::Hash;
++    Ok(ProofTxid::from_slice(b).map_err(|e| format!("txid bytes: {e}"))?.to_string())
++}
++
++fn pb_outpoint(s: &str) -> Result<pb::OutPoint, String> {
++    let o = ProofOutPoint::from_str(s).map_err(|e| format!("outpoint {s}: {e}"))?;
++    Ok(pb::OutPoint { txid: pb_txid(&o.txid.to_string())?, vout: o.vout })
++}
++
++fn pb_outpoint_str(o: &pb::OutPoint) -> Result<String, String> {
++    Ok(format!("{}:{}", pb_txid_str(&o.txid)?, o.vout))
++}
++
++/// JSON (version 1 files written before the protobuf format) is still read when the content starts with `{`.
++fn is_json(b: &[u8]) -> bool {
++    b.iter().find(|c| !c.is_ascii_whitespace()) == Some(&b'{')
++}
++
++impl ArkProof {
++    fn to_pb(&self) -> Result<pb::ArkProof, String> {
++        Ok(pb::ArkProof {
++            version: self.version as u32,
++            witnesses: self.witnesses.iter().map(|t| pb_txid(t)).collect::<Result<_, _>>()?,
++            psbts: self
++                .psbts
++                .iter()
++                .map(|p| general_purpose::STANDARD.decode(p).map_err(|e| format!("psbt base64: {e}")))
++                .collect::<Result<_, _>>()?,
++            recoveries: self.recoveries.iter().map(|t| pb_txid(t)).collect::<Result<_, _>>()?,
++            vtxos: self.vtxos.iter().map(|o| pb_outpoint(o)).collect::<Result<_, _>>()?,
++        })
++    }
++
++    fn from_pb(p: pb::ArkProof) -> Result<Self, String> {
++        Ok(ArkProof {
++            version: u8::try_from(p.version).map_err(|_| format!("version {}", p.version))?,
++            witnesses: p.witnesses.iter().map(|t| pb_txid_str(t)).collect::<Result<_, _>>()?,
++            psbts: p.psbts.iter().map(|b| general_purpose::STANDARD.encode(b)).collect(),
++            recoveries: p.recoveries.iter().map(|t| pb_txid_str(t)).collect::<Result<_, _>>()?,
++            vtxos: p.vtxos.iter().map(pb_outpoint_str).collect::<Result<_, _>>()?,
++        })
++    }
++
++    /// [rgb-arkade] Protobuf encoding (`rgbarkade.v1.ArkProof`).
++    pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
++        use prost::Message;
++        Ok(self.to_pb()?.encode_to_vec())
++    }
++
++    /// [rgb-arkade] Decode a proof file: protobuf, or legacy JSON.
++    pub fn from_bytes(b: &[u8]) -> Result<Self, String> {
++        use prost::Message;
++        if is_json(b) {
++            return serde_json::from_slice(b).map_err(|e| format!("json: {e}"));
++        }
++        Self::from_pb(pb::ArkProof::decode(b).map_err(|e| format!("protobuf: {e}"))?)
++    }
++}
++
++impl ArkFraudProof {
++    /// [rgb-arkade] Protobuf encoding (`rgbarkade.v1.ArkFraudProof`).
++    pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
++        use prost::Message;
++        Ok(pb::ArkFraudProof {
++            version: self.version as u32,
++            vtxo: Some(pb_outpoint(&self.vtxo)?),
++            forfeit_a: pb_txid(&self.forfeit_a)?,
++            proof_a: Some(self.proof_a.to_pb()?),
++            forfeit_b: pb_txid(&self.forfeit_b)?,
++            proof_b: Some(self.proof_b.to_pb()?),
++        }
++        .encode_to_vec())
++    }
++
++    /// [rgb-arkade] Decode a fraud proof file: protobuf, or legacy JSON.
++    pub fn from_bytes(b: &[u8]) -> Result<Self, String> {
++        use prost::Message;
++        if is_json(b) {
++            return serde_json::from_slice(b).map_err(|e| format!("json: {e}"));
++        }
++        let p = pb::ArkFraudProof::decode(b).map_err(|e| format!("protobuf: {e}"))?;
++        Ok(ArkFraudProof {
++            version: u8::try_from(p.version).map_err(|_| format!("version {}", p.version))?,
++            vtxo: pb_outpoint_str(p.vtxo.as_ref().ok_or("missing vtxo")?)?,
++            forfeit_a: pb_txid_str(&p.forfeit_a)?,
++            proof_a: ArkProof::from_pb(p.proof_a.ok_or("missing proof_a")?)?,
++            forfeit_b: pb_txid_str(&p.forfeit_b)?,
++            proof_b: ArkProof::from_pb(p.proof_b.ok_or("missing proof_b")?)?,
++        })
++    }
++}
++
++/// Self-contained Ark proof bundle (sidecar of a consignment; see [`pb`] for the wire format).
 +#[derive(Debug, Clone, Serialize, Deserialize)]
 +pub struct ArkProof {
 +    /// Format version (1).
@@ -459,7 +626,12 @@ index 0000000..d1f75f9
 +}
 +
 +pub(crate) fn opret_layout_ok(tx: &ProofTx) -> Result<(), String> {
-+    let oprets = tx.output.iter().filter(|o| o.script_pubkey.is_op_return()).count();
++    // [emulator covenant] an ARK extension OP_RETURN (data starting with "ARK", e.g. the emulator
++    // packet) may follow; RGB (opret1st) only reads output 0
++    let is_ark_ext = |s: &bdk_wallet::bitcoin::Script| {
++        s.instructions().nth(1).and_then(|i| i.ok()).and_then(|i| i.push_bytes().map(|b| b.as_bytes().starts_with(b"ARK"))).unwrap_or(false)
++    };
++    let oprets = tx.output.iter().filter(|o| o.script_pubkey.is_op_return() && !is_ark_ext(&o.script_pubkey)).count();
 +    let o0 = tx.output.first().ok_or("no outputs")?;
 +    let b = o0.script_pubkey.as_bytes();
 +    // 0 sat on an arkd that takes it as data; stock arkd only accepts this script shape as a
@@ -633,9 +805,16 @@ index 0000000..d1f75f9
 +                    if !cb.verify_taproot_commitment(&secp, out_key, script) {
 +                        return Err(format!("{txid} input {idx}: control block does not commit to the prevout key"));
 +                    }
++                    // [rgb-arkade] the operator's signature must commit to the whole tx (that is
++                    // what makes the spend operator-acknowledged); a co-signing user may use any
++                    // sighash (e.g. a maker's SIGHASH_SINGLE|ANYONECANPAY offer), it only proves
++                    // the user authorized its own input/output pair
++                    let leaf_has_operator = pks.iter().any(|k| self.operators.contains(k));
 +                    for pk in &pks {
 +                        let sig = input.tap_script_sigs[&(*pk, leaf)];
-+                        check_sighash_type(sig.sighash_type)?;
++                        if !leaf_has_operator || self.operators.contains(pk) {
++                            check_sighash_type(sig.sighash_type)?;
++                        }
 +                        let h = cache
 +                            .taproot_script_spend_signature_hash(idx, &Prevouts::All(&prevouts), leaf, sig.sighash_type)
 +                            .map_err(|e| e.to_string())?;
@@ -885,6 +1064,54 @@ index 0000000..d1f75f9
 +            input,
 +            output,
 +        }
++    }
++
++    #[test]
++    fn proof_protobuf_roundtrip_and_legacy_json() {
++        let t1 = "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b";
++        let t2 = "0000000000000000000000000000000000000000000000000000000000000001";
++        let p = ArkProof {
++            version: 1,
++            witnesses: vec![t1.into(), t2.into()],
++            psbts: vec![general_purpose::STANDARD.encode(b"psbt\xff\x01\x02"), general_purpose::STANDARD.encode([7u8; 300])],
++            recoveries: vec![t2.into()],
++            vtxos: vec![format!("{t1}:3")],
++        };
++        let pb = p.to_bytes().unwrap();
++        let json = serde_json::to_vec(&p).unwrap();
++        let same = |q: &ArkProof| serde_json::to_string(q).unwrap() == serde_json::to_string(&p).unwrap();
++        assert!(same(&ArkProof::from_bytes(&pb).unwrap()));
++        assert!(same(&ArkProof::from_bytes(&json).unwrap()), "legacy JSON still read");
++        assert!(pb.len() < json.len());
++        // txids are raw bytes in consensus order (reverse of the hex)
++        let mut want = vec![0u8; 32];
++        want[0] = 1;
++        assert_eq!(pb_txid(t2).unwrap(), want);
++        assert!(pb.windows(32).any(|w| w == want.as_slice()));
++        // PSBTs are raw bytes
++        assert!(pb.windows(7).any(|w| w == b"psbt\xff\x01\x02"));
++        assert!(ArkProof::from_bytes(&[0xff, 0xff]).is_err());
++
++        let f = ArkFraudProof { version: 1, vtxo: format!("{t2}:0"), forfeit_a: t1.into(), proof_a: p.clone(), forfeit_b: t2.into(), proof_b: p.clone() };
++        let back = ArkFraudProof::from_bytes(&f.to_bytes().unwrap()).unwrap();
++        assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&f).unwrap());
++        let back = ArkFraudProof::from_bytes(&serde_json::to_vec(&f).unwrap()).unwrap();
++        assert_eq!(back.vtxo, f.vtxo);
++    }
++
++    #[test]
++    fn opret_layout_allows_only_ark_extension_extra() {
++        let out = |v: u64, s: ProofScript| ProofTxOut { value: ProofAmount::from_sat(v), script_pubkey: s };
++        let prev = ProofOutPoint::new(ProofTxid::from_byte_array([1; 32]), 0);
++        let c = ProofScript::new_op_return([7; 32]);
++        let ext = ProofScript::new_op_return(*b"ARK\x01\x00");
++        let other = ProofScript::new_op_return(*b"XYZ\x01\x00");
++        let p2tr = ProofScript::from_bytes([&[0x51, 0x20][..], &[3; 32]].concat());
++        assert!(opret_layout_ok(&tx(prev, vec![out(1, c.clone()), out(500, p2tr.clone())])).is_ok());
++        assert!(opret_layout_ok(&tx(prev, vec![out(1, c.clone()), out(500, p2tr.clone()), out(0, ext.clone())])).is_ok());
++        assert!(opret_layout_ok(&tx(prev, vec![out(1, c.clone()), out(0, other)])).is_err());
++        assert!(opret_layout_ok(&tx(prev, vec![out(1, c.clone()), out(0, c.clone())])).is_err());
++        assert!(opret_layout_ok(&tx(prev, vec![out(0, ext), out(1, c)])).is_err());
 +    }
 +
 +    #[test]
@@ -1253,7 +1480,7 @@ index fb204cf..3ff6242 100644
              if asset_schema == AssetSchema::Ifa {
                  let contract_id = valid_consignment.contract_id();
 diff --git a/src/wallet/rust_only.rs b/src/wallet/rust_only.rs
-index 11d45e5..0117f0c 100644
+index 11d45e5..9b8ee66 100644
 --- a/src/wallet/rust_only.rs
 +++ b/src/wallet/rust_only.rs
 @@ -4,6 +4,15 @@
@@ -1272,7 +1499,7 @@ index 11d45e5..0117f0c 100644
  /// RGB asset-specific information to color a transaction
  #[derive(Debug, Clone)]
  pub struct AssetColoringInfo {
-@@ -407,6 +416,843 @@ impl Wallet {
+@@ -407,6 +416,844 @@ impl Wallet {
          ))
      }
  
@@ -1694,7 +1921,9 @@ index 11d45e5..0117f0c 100644
 +            Some(bundle) if bundle.witness_id() != witness_id => {
 +                let seal_txid = TxPtr::Txid(witness_id);
 +                let mut received = vec![];
-+                for KnownTransition { transition, .. } in bundle.bundle.known_transitions.iter() {
++                // [rgb-arkade] explicit seals of any bundle (e.g. a maker's change set by the
++                // checkpoint transition T1 while the last bundle is the buyer's T2)
++                for KnownTransition { transition, .. } in consignment.bundles.iter().flat_map(|b| b.bundle.known_transitions.iter()) {
 +                    for (ass_type, typed_assigns) in transition.assignments.iter() {
 +                        if *ass_type != OS_ASSET {
 +                            continue;
@@ -1780,13 +2009,12 @@ index 11d45e5..0117f0c 100644
 +        min_lifetime: crate::ark_proof::ArkMinLifetime,
 +    ) -> Result<Vec<String>, Error> {
 +        self.check_online(online)?;
-+        let content = fs::read_to_string(&proof_path).map_err(|_| Error::InvalidFilePath {
++        let content = fs::read(&proof_path).map_err(|_| Error::InvalidFilePath {
 +            file_path: proof_path.to_string_lossy().to_string(),
 +        })?;
-+        let proof: crate::ark_proof::ArkProof =
-+            serde_json::from_str(&content).map_err(|e| Error::Internal {
-+                details: format!("invalid Ark proof: {e}"),
-+            })?;
++        let proof = crate::ark_proof::ArkProof::from_bytes(&content).map_err(|e| Error::Internal {
++            details: format!("invalid Ark proof: {e}"),
++        })?;
 +        let indexer = self.indexer();
 +        let spender = |op: BdkOutPoint, spk: &ScriptBuf| indexer.spender_of(op, spk);
 +        let verified = crate::ark_proof::verify_ark_proof_ext(
@@ -2066,8 +2294,8 @@ index 11d45e5..0117f0c 100644
 +    #[cfg(any(feature = "electrum", feature = "esplora"))]
 +    pub fn verify_ark_fraud_proof(&self, online: Online, path: PathBuf, operator_pubkey: String) -> Result<crate::ark_proof::ArkFraudEvidence, Error> {
 +        self.check_online(online)?;
-+        let content = fs::read_to_string(&path).map_err(|_| Error::InvalidFilePath { file_path: path.to_string_lossy().to_string() })?;
-+        let f: crate::ark_proof::ArkFraudProof = serde_json::from_str(&content).map_err(|e| Error::Internal { details: format!("invalid fraud proof: {e}") })?;
++        let content = fs::read(&path).map_err(|_| Error::InvalidFilePath { file_path: path.to_string_lossy().to_string() })?;
++        let f = crate::ark_proof::ArkFraudProof::from_bytes(&content).map_err(|e| Error::Internal { details: format!("invalid fraud proof: {e}") })?;
 +        crate::ark_proof::verify_ark_fraud(&f, self.blockchain_resolver(), &operator_pubkey)
 +            .map_err(|details| Error::Internal { details: format!("fraud proof rejected: {details}") })
 +    }
@@ -2116,7 +2344,7 @@ index 11d45e5..0117f0c 100644
      /// Consume an RGB fascia.
      ///
      /// <div class="warning">This method is meant for special usage and is normally not needed, use
-@@ -449,8 +1295,9 @@ impl Wallet {
+@@ -449,8 +1296,9 @@ impl Wallet {
      ) -> Result<UpdateRes, Error> {
          info!(self.logger(), "Updating witnesses...");
          self.check_online(online)?;

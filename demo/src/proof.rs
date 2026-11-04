@@ -1,4 +1,4 @@
-//! Self-contained Ark proofs (sidecar `<consignment>.arkproof.json`).
+//! Self-contained Ark proofs (sidecar `<consignment>.arkproof.pb`).
 //!
 //! Sender side (uses arkd): collect the PSBT of every unmined RGB witness and of every unmined
 //! ancestor down to a mined tx (`GetVirtualTxs`), carrying the proofs received earlier.
@@ -23,16 +23,8 @@ pub(crate) fn proof_path(consignment: &Path) -> PathBuf {
     PathBuf::from(format!("{}{}", consignment.display(), rgb_lib::ark_proof::ARK_PROOF_SUFFIX))
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
-pub(crate) struct ProofFile {
-    pub version: u8,
-    pub witnesses: Vec<String>,
-    pub psbts: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub recoveries: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub vtxos: Vec<String>,
-}
+/// The proof bundle; on disk protobuf (`proto/ark_proof.proto`).
+pub(crate) type ProofFile = rgb_lib::ark_proof::ArkProof;
 
 /// Declare `fid` (a witness of the proof) as a sweep-recovery forfeit.
 pub(crate) fn mark_recovery(path: &Path, fid: Txid) -> anyhow::Result<()> {
@@ -41,7 +33,7 @@ pub(crate) fn mark_recovery(path: &Path, fid: Txid) -> anyhow::Result<()> {
     if !f.recoveries.contains(&fid.to_string()) {
         f.recoveries.push(fid.to_string());
     }
-    std::fs::write(path, serde_json::to_string(&f)?)?;
+    crate::proof::save(path, &f)?;
     Ok(())
 }
 
@@ -55,7 +47,15 @@ pub(crate) async fn add_vtxos(client: &ArkClient, regtest: &Regtest, path: &Path
         if have.contains(&t) {
             continue;
         }
-        let r = client.network_client().get_virtual_txs(vec![t.to_string()], None, None).await.map_err(|e| anyhow!("GetVirtualTxs({t}): {e:?}"))?;
+        let r = match client.network_client().get_virtual_txs(vec![t.to_string()], None, None).await {
+            Ok(r) => r,
+            // a commitment tx still in the mempool is not a virtual tx (arkd returns raw hex)
+            Err(e) if !vtxos.iter().any(|o| o.txid == t) => {
+                println!("[proof] {t}: not a virtual tx, left out (unmined commitment?): {e:?}");
+                continue;
+            }
+            Err(e) => anyhow::bail!("GetVirtualTxs({t}): {e:?}"),
+        };
         let p = r.txs.into_iter().find(|p| p.unsigned_tx.compute_txid() == t).ok_or_else(|| anyhow!("{t} not a virtual tx"))?;
         for i in &p.unsigned_tx.input {
             if regtest.tx_confirmations(&i.previous_output.txid).is_none() {
@@ -70,7 +70,7 @@ pub(crate) async fn add_vtxos(client: &ArkClient, regtest: &Regtest, path: &Path
             f.vtxos.push(o.to_string());
         }
     }
-    std::fs::write(path, serde_json::to_string(&f)?)?;
+    crate::proof::save(path, &f)?;
     Ok(())
 }
 
@@ -80,8 +80,23 @@ pub(crate) struct ProofStats {
     pub n_witnesses: usize,
 }
 
-fn load(path: &Path) -> anyhow::Result<ProofFile> {
-    Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
+/// Size of a proof file (protobuf) next to the legacy JSON encoding of the same content.
+pub(crate) fn size_cmp(path: &Path) -> anyhow::Result<String> {
+    let f = load(path)?;
+    let pb = std::fs::read(path)?;
+    let js = serde_json::to_vec(&f)?;
+    Ok(format!("pb {} B (gzip {}), json {} B (gzip {}), {} psbts", pb.len(), crate::wire::gz_len(&pb), js.len(), crate::wire::gz_len(&js), f.psbts.len()))
+}
+
+/// Write a proof file (protobuf).
+pub(crate) fn save(path: &Path, f: &ProofFile) -> anyhow::Result<()> {
+    std::fs::write(path, f.to_bytes().map_err(|e| anyhow!("encode proof: {e}"))?)?;
+    Ok(())
+}
+
+/// Read a proof file (protobuf `rgbarkade.v1.ArkProof`; legacy JSON is still read).
+pub(crate) fn load(path: &Path) -> anyhow::Result<ProofFile> {
+    ProofFile::from_bytes(&std::fs::read(path)?).map_err(|e| anyhow!("{}: {e}", path.display()))
 }
 
 /// Build the proof for `witnesses` (unmined ones are kept), reusing PSBTs of `carried` proofs.
@@ -155,7 +170,7 @@ pub(crate) async fn build_proof(
         recoveries: carried_recoveries,
         vtxos: vec![],
     };
-    std::fs::write(out, serde_json::to_string(&file)?)?;
+    crate::proof::save(out, &file)?;
     let bytes = std::fs::metadata(out)?.len();
     println!("[proof] {} : {} witnesses, {} PSBTs, {} bytes", out.display(), file.witnesses.len(), file.psbts.len(), bytes);
     Ok(ProofStats { bytes, n_psbts: file.psbts.len(), n_witnesses: file.witnesses.len() })
@@ -287,8 +302,8 @@ pub(crate) fn negatives(
     }
     let mut all = true;
     for (name, f) in cases {
-        let path = proof.with_extension(format!("neg-{name}.json"));
-        std::fs::write(&path, serde_json::to_string(&f)?)?;
+        let path = proof.with_extension(format!("neg-{name}.pb"));
+        crate::proof::save(&path, &f)?;
         let r = import(rgb, online, &path, operators);
         let rejected = r.is_err();
         println!("[{who}] NEG proof {name}: {}", match &r { Ok(v) => format!("ACCEPTED {v:?}"), Err(e) => format!("rejected: {e}") });
@@ -345,8 +360,8 @@ pub(crate) fn negative_key_path_witness(
     let mut psbt = Psbt::from_unsigned_tx(tx.clone())?;
     psbt.inputs[0].tap_key_sig = Some(bitcoin::taproot::Signature { signature, sighash_type: TapSighashType::Default });
     let f = ProofFile { version: 1, witnesses: vec![tx.compute_txid().to_string()], psbts: vec![psbt.to_string()], recoveries: vec![], vtxos: vec![] };
-    let path = proof.with_extension("neg-key_path_witness.json");
-    std::fs::write(&path, serde_json::to_string(&f)?)?;
+    let path = proof.with_extension("neg-key_path_witness.pb");
+    crate::proof::save(&path, &f)?;
     // the indexer behind the resolver can lag behind the faucet block
     let mut r = import(rgb, online, &path, operators);
     for _ in 0..10 {
