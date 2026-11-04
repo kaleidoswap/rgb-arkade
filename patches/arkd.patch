@@ -1,0 +1,491 @@
+diff --git a/internal/core/application/fraud.go b/internal/core/application/fraud.go
+index 9c7706b8..d6e9b3e2 100644
+--- a/internal/core/application/fraud.go
++++ b/internal/core/application/fraud.go
+@@ -11,6 +11,7 @@ import (
+ 	"github.com/arkade-os/arkd/internal/core/domain"
+ 	"github.com/arkade-os/arkd/pkg/ark-lib/tree"
+ 	"github.com/arkade-os/arkd/pkg/ark-lib/txutils"
++	"github.com/btcsuite/btcd/btcec/v2/schnorr"
+ 	"github.com/btcsuite/btcd/btcutil"
+ 	"github.com/btcsuite/btcd/btcutil/psbt"
+ 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+@@ -156,9 +157,24 @@ func (s *service) broadcastForfeitTx(ctx context.Context, vtxo domain.Vtxo) erro
+ 	}
+ 
+ 	if err := s.wallet.LockConnectorUtxos(ctx, []domain.Outpoint{connectorOutpoint}); err != nil {
+-		return fmt.Errorf("failed to lock connector utxos: %s", err)
++		// [rgb-arkade: forfeit-cosign] a previous reaction for the same vtxo (duplicate scanner
++		// notification, or an attempt that failed after locking) still holds the lock: the
++		// connector is reserved for this forfeit anyway, so carry on instead of giving up.
++		if !strings.Contains(err.Error(), "already locked") {
++			return fmt.Errorf("failed to lock connector utxos: %s", err)
++		}
++		log.Debugf("connector %s already locked, reacting anyway", connectorOutpoint)
+ 	}
+ 
++	// [rgb-arkade: forfeit-cosign] the stored forfeit is already co-signed by the operator at
++	// batch time; drop those signatures before signing again, otherwise the PSBT carries the
++	// same (pubkey, leaf) signature twice and can't be parsed ("duplicate key").
++	signerPubkey, err := s.signer.GetPubkey(ctx)
++	if err != nil {
++		return fmt.Errorf("failed to get signer pubkey: %s", err)
++	}
++	stripSignerSigs(forfeitTx, schnorr.SerializePubKey(signerPubkey))
++
+ 	forfeitTxB64, err := forfeitTx.B64Encode()
+ 	if err != nil {
+ 		return fmt.Errorf("failed to encode forfeit tx: %s", err)
+@@ -427,3 +443,22 @@ func computeVSize(tx *wire.MsgTx) lntypes.VByte {
+ 	weight := totalSize + baseSize*3
+ 	return lntypes.WeightUnit(uint64(weight)).ToVB()
+ }
++
++// [rgb-arkade: forfeit-cosign] stripSignerSigs removes the operator's own signatures from a
++// forfeit PSBT: its tapscript signatures on the vtxo input and the key-path signature on the
++// connector input (the connector output belongs to the operator).
++func stripSignerSigs(ptx *psbt.Packet, signerXOnly []byte) {
++	for i := range ptx.Inputs {
++		in := &ptx.Inputs[i]
++		kept := in.TaprootScriptSpendSig[:0]
++		for _, sig := range in.TaprootScriptSpendSig {
++			if !bytes.Equal(sig.XOnlyPubKey, signerXOnly) {
++				kept = append(kept, sig)
++			}
++		}
++		in.TaprootScriptSpendSig = kept
++		if len(in.TaprootLeafScript) == 0 {
++			in.TaprootKeySpendSig = nil
++		}
++	}
++}
+diff --git a/internal/core/application/indexer.go b/internal/core/application/indexer.go
+index 847c5002..0fb07696 100644
+--- a/internal/core/application/indexer.go
++++ b/internal/core/application/indexer.go
+@@ -11,6 +11,7 @@ import (
+ 	"encoding/json"
+ 	"errors"
+ 	"fmt"
++	"github.com/arkade-os/arkd/pkg/ark-lib/offchain"
+ 	"math"
+ 	"slices"
+ 	"sort"
+@@ -711,7 +712,9 @@ func (i *indexerService) walkVtxoChain(
+ 						Spends:    []string{ptx.UnsignedTx.TxIn[0].PreviousOutPoint.String()},
+ 					})
+ 
+-					allOutpoints = append(allOutpoints, Outpoint{Txid: txid, VOut: 0})
++					allOutpoints = append(allOutpoints, Outpoint{
++						Txid: txid, VOut: offchain.CheckpointOutputIndex(ptx.UnsignedTx), // [rgb-arkade patch 1]
++					})
+ 					chainTx.Spends = append(chainTx.Spends, txid)
+ 
+ 					// populate newNextVtxos with checkpoints inputs
+diff --git a/internal/core/application/service.go b/internal/core/application/service.go
+index 959ab5ef..ce615405 100644
+--- a/internal/core/application/service.go
++++ b/internal/core/application/service.go
+@@ -349,7 +349,8 @@ func (s *service) registerEventHandlers() {
+ 				checkpointTxsByOutpoint[ptx.UnsignedTx.TxIn[0].PreviousOutPoint.String()] = TxData{
+ 					Tx: tx, Txid: txid,
+ 				}
+-				script := hex.EncodeToString(ptx.UnsignedTx.TxOut[0].PkScript)
++				cpVout := offchain.CheckpointOutputIndex(ptx.UnsignedTx) // [rgb-arkade patch 1]
++				script := hex.EncodeToString(ptx.UnsignedTx.TxOut[cpVout].PkScript)
+ 				checkpointScripts = append(
+ 					checkpointScripts,
+ 					script,
+@@ -908,11 +909,21 @@ func (s *service) SubmitOffchainTx(
+ 			})
+ 		}
+ 
++		// [rgb-arkade patch 1] optional user OP_RETURN in the checkpoint tx; the deterministic
++		// rebuild below reproduces it, so any other modification still fails the txid check.
++		checkpointOpReturn, err := offchain.ExtractCheckpointOpReturn(checkpointPsbt.UnsignedTx)
++		if err != nil {
++			return nil, errors.CHECKPOINT_MISMATCH.New(
++				"invalid checkpoint tx %s: %s", checkpointTxid, err,
++			).WithMetadata(errors.CheckpointMismatchMetadata{ExpectedTxid: txid})
++		}
++
+ 		ins = append(ins, offchain.VtxoInput{
+ 			Outpoint:           &checkpointPsbt.UnsignedTx.TxIn[0].PreviousOutPoint,
+ 			Tapscript:          tapscript,
+ 			RevealedTapscripts: taptree,
+ 			Amount:             int64(vtxo.Amount),
++			CheckpointOpReturn: checkpointOpReturn,
+ 		})
+ 	}
+ 
+@@ -1287,7 +1298,8 @@ func (s *service) FinalizeOffchainTx(
+ 			return errors.INVALID_PSBT_INPUT.New("checkpoint tx has no outputs").
+ 				WithMetadata(errors.InputMetadata{Txid: txid, InputIndex: inIndex})
+ 		}
+-		checkpointOutputScript := checkpointTx.UnsignedTx.TxOut[0].PkScript
++		cpVout := offchain.CheckpointOutputIndex(checkpointTx.UnsignedTx) // [rgb-arkade patch 1]
++		checkpointOutputScript := checkpointTx.UnsignedTx.TxOut[cpVout].PkScript
+ 		if !bytes.Equal(checkpointOutputScript, expectedOutputScript) {
+ 			return errors.INVALID_PSBT_INPUT.New(
+ 				"invalid output script: got %x expected %x",
+@@ -1303,7 +1315,7 @@ func (s *service) FinalizeOffchainTx(
+ 
+ 		// save the encoded taproot tree in the checkpoint tx output
+ 		// it will be used to compute the sweep leaf in the sweeper
+-		checkpointTx.Outputs[0].TaprootTapTree = encodedTapTree
++		checkpointTx.Outputs[cpVout].TaprootTapTree = encodedTapTree
+ 
+ 		var b64checkpointTx string
+ 		b64checkpointTx, err = checkpointTx.B64Encode()
+@@ -1749,6 +1761,12 @@ func (s *service) RegisterIntent(
+ 			})
+ 		}
+ 
++		// [rgb-arkade patch 6] RGB recovery of a swept/expired VTXO: forfeit it anyway
++		if message.RgbRecoveryForfeit && (vtxo.Swept || vtxo.IsExpired()) && !vtxo.IsNote() {
++			vtxo.ForceForfeit = true
++			log.Infof("rgb recovery: swept/expired vtxo %s will be forfeited", vtxo.Outpoint)
++		}
++
+ 		// validation is required only in case the vtxo can be unrolled = requires a forfeit transaction
+ 		if vtxo.RequiresForfeit() {
+ 			vtxoTapKey, err := vtxo.TapKey()
+@@ -3370,6 +3388,15 @@ func (s *service) finalizeRound(roundId string, roundTiming roundTiming, setting
+ 		}
+ 
+ 		for _, tx := range forfeitTxList {
++			// [rgb-arkade patch 5] co-sign the VTXO input of the stored forfeit, so that its
++			// owner can fetch (GetVirtualTxs) an operator-signed forfeit and prove off-line that
++			// the operator accepted it (observed: the operator also adds its key-path signature
++			// on the connector input; the connector *tx* itself stays unsigned).
++			if signed, err := s.signer.SignTransactionTapscript(ctx, tx, nil); err == nil {
++				tx = signed
++			} else {
++				log.WithError(err).Warn("failed to co-sign forfeit tx")
++			}
+ 			// nolint
+ 			ptx, _ := psbt.NewFromRawBytes(strings.NewReader(tx), true)
+ 			forfeitTxid := ptx.UnsignedTx.TxID()
+@@ -3730,7 +3757,8 @@ func checkpointOutputScripts(txs []domain.Tx) []string {
+ 		if err != nil || len(ptx.UnsignedTx.TxOut) == 0 {
+ 			continue
+ 		}
+-		scripts = append(scripts, hex.EncodeToString(ptx.UnsignedTx.TxOut[0].PkScript))
++		cpVout := offchain.CheckpointOutputIndex(ptx.UnsignedTx) // [rgb-arkade patch 1]
++		scripts = append(scripts, hex.EncodeToString(ptx.UnsignedTx.TxOut[cpVout].PkScript))
+ 	}
+ 	return scripts
+ }
+@@ -4603,6 +4631,12 @@ func validateOffchainTxOutputs(
+ 
+ 		// handle non-extension OP_RETURN outputs
+ 		if len(out.PkScript) > 0 && out.PkScript[0] == txscript.OP_RETURN {
++			// [rgb-arkade patch 2] 0-value OP_RETURN = data output (e.g. RGB opret commitment),
++			// never a (sub-dust) VTXO; it still counts towards maxOpReturnOutputs.
++			if script.IsDataOpReturn(out.Value, out.PkScript) {
++				outputs = append(outputs, out)
++				continue
++			}
+ 			// subdust OP_RETURN: must have value < dust
+ 			if script.IsSubDustScript(out.PkScript) {
+ 				if out.Value >= int64(dust) {
+diff --git a/internal/core/application/sweeper.go b/internal/core/application/sweeper.go
+index 28f74192..22823df4 100644
+--- a/internal/core/application/sweeper.go
++++ b/internal/core/application/sweeper.go
+@@ -6,6 +6,7 @@ import (
+ 	"encoding/hex"
+ 	"errors"
+ 	"fmt"
++	"github.com/arkade-os/arkd/pkg/ark-lib/offchain"
+ 	"strings"
+ 	"sync"
+ 	"time"
+@@ -219,7 +220,7 @@ func (s *sweeper) scheduleCheckpointSweep(
+ 	vtxo domain.Outpoint, checkpointTx *psbt.Packet, blockTimestamp *ports.BlockTimestamp,
+ ) error {
+ 	checkpointTxid := checkpointTx.UnsignedTx.TxHash()
+-	checkpointVOut := uint32(0)
++	checkpointVOut := offchain.CheckpointOutputIndex(checkpointTx.UnsignedTx) // [rgb-arkade patch 1]
+ 
+ 	if len(checkpointTx.Outputs) <= int(checkpointVOut) {
+ 		return fmt.Errorf("no outputs found in checkpoint tx")
+@@ -310,7 +311,7 @@ func (s *sweeper) scheduleCheckpointSweep(
+ 			Txid:   checkpointTxid.String(),
+ 			Index:  checkpointVOut,
+ 			Script: hex.EncodeToString(prevoutScript),
+-			Value:  uint64(checkpointTx.UnsignedTx.TxOut[0].Value),
++			Value:  uint64(checkpointTx.UnsignedTx.TxOut[checkpointVOut].Value),
+ 			TapscriptLeaf: &ports.Tapscript{
+ 				InternalKey:  hex.EncodeToString(internalKey.SerializeCompressed()),
+ 				ControlBlock: hex.EncodeToString(sweepMerkleProof.ControlBlock),
+diff --git a/internal/core/application/utils.go b/internal/core/application/utils.go
+index 44d842d9..6d6ed76c 100644
+--- a/internal/core/application/utils.go
++++ b/internal/core/application/utils.go
+@@ -134,6 +134,10 @@ func decodeTx(offchainTx domain.OffchainTx) (string, []domain.Outpoint, []domain
+ 			extension.IsExtension(out.PkScript) {
+ 			continue
+ 		}
++		// [rgb-arkade patch 2] 0-value OP_RETURN data outputs are not VTXOs
++		if script.IsDataOpReturn(out.Value, out.PkScript) {
++			continue
++		}
+ 		if len(out.PkScript) < 2 {
+ 			return "", nil, nil, fmt.Errorf(
+ 				"invalid output script at index %d: script too short (%d bytes)",
+diff --git a/internal/core/domain/vtxo.go b/internal/core/domain/vtxo.go
+index d0301303..03783a99 100644
+--- a/internal/core/domain/vtxo.go
++++ b/internal/core/domain/vtxo.go
+@@ -65,6 +65,10 @@ type Vtxo struct {
+ 	Depth              uint32   // chain depth: 0 for vtxos from batch, increments on each chain
+ 	MarkerIDs          []string // marker IDs for DAG traversal optimization (supports multiple parent markers)
+ 	Assets             []AssetDenomination
++	// [rgb-arkade patch 6] set at intent registration for a swept/expired VTXO whose owner asked
++	// for an RGB recovery forfeit: the VTXO is then forfeited like a live one (connector + forfeit
++	// tx co-signed by the operator) instead of being settled without a forfeit.
++	ForceForfeit bool `json:"forceForfeit,omitempty"`
+ }
+ 
+ func (v Vtxo) String() string {
+@@ -78,6 +82,9 @@ func (v Vtxo) IsNote() bool {
+ }
+ 
+ func (v Vtxo) RequiresForfeit() bool {
++	if v.ForceForfeit {
++		return !v.IsNote() && !v.Unrolled
++	}
+ 	return !v.Swept && !v.IsExpired() && !v.IsNote() && !v.Unrolled
+ }
+ 
+diff --git a/internal/infrastructure/db/service.go b/internal/infrastructure/db/service.go
+index 3309a75f..f9c69bd2 100644
+--- a/internal/infrastructure/db/service.go
++++ b/internal/infrastructure/db/service.go
+@@ -693,6 +693,11 @@ func (s *service) updateProjectionsAfterOffchainTxEvents(events []domain.Event)
+ 					continue
+ 				}
+ 
++				// [rgb-arkade patch 2] 0-value OP_RETURN data outputs are not VTXOs
++				if script.IsDataOpReturn(int64(out.Amount), out.PkScript) {
++					continue
++				}
++
+ 				// at that point, we should only have valid taproot script
+ 				if len(out.PkScript) != 34 {
+ 					continue
+diff --git a/internal/infrastructure/tx-builder/covenantless/builder.go b/internal/infrastructure/tx-builder/covenantless/builder.go
+index 7a1212a2..9fae8e62 100644
+--- a/internal/infrastructure/tx-builder/covenantless/builder.go
++++ b/internal/infrastructure/tx-builder/covenantless/builder.go
+@@ -477,12 +477,20 @@ func (b *txBuilder) VerifyForfeitTxs(
+ 			prevouts = []*wire.TxOut{connectorOutput, vtxoPrevout}
+ 		}
+ 
+-		rebuilt, err := tree.BuildForfeitTx(
++		// [rgb-arkade patch 4] optional user OP_RETURN, reproduced by the deterministic rebuild
++		// (the VTXO owner's SIGHASH_DEFAULT signature also commits to it)
++		forfeitOpReturn, err := tree.ExtractForfeitOpReturn(tx.UnsignedTx)
++		if err != nil {
++			return nil, err
++		}
++
++		rebuilt, err := tree.BuildForfeitTxWithOpReturn(
+ 			inputs,
+ 			sequences,
+ 			prevouts,
+ 			forfeitScript,
+ 			uint32(locktime),
++			forfeitOpReturn,
+ 		)
+ 		if err != nil {
+ 			return nil, err
+diff --git a/pkg/ark-lib/intent/message.go b/pkg/ark-lib/intent/message.go
+index 650fb22b..c09449ff 100644
+--- a/pkg/ark-lib/intent/message.go
++++ b/pkg/ark-lib/intent/message.go
+@@ -39,6 +39,10 @@ type RegisterMessage struct {
+ 	// if the outputs are not registered in the proof or all the outputs are onchain, this field is not required
+ 	// it is required only if one of the outputs is offchain
+ 	CosignersPublicKeys []string `json:"cosigners_public_keys"`
++	// [rgb-arkade patch 6] RgbRecoveryForfeit asks the operator to require (and co-sign, see
++	// patch 5) a forfeit tx for every swept/expired input, so that the forfeit can carry the RGB
++	// transition moving the asset of the swept VTXO into the new batch.
++	RgbRecoveryForfeit bool `json:"rgb_recovery_forfeit,omitempty"`
+ }
+ 
+ func (m RegisterMessage) Encode() (string, error) {
+diff --git a/pkg/ark-lib/offchain/tx.go b/pkg/ark-lib/offchain/tx.go
+index 7e78534a..0544f73a 100644
+--- a/pkg/ark-lib/offchain/tx.go
++++ b/pkg/ark-lib/offchain/tx.go
+@@ -25,6 +25,45 @@ type VtxoInput struct {
+ 	// RevealedTapscripts is the whole taproot tree of the vtxo
+ 	// it must be revealed to the ark operator in order to verify the spent paths are valid
+ 	RevealedTapscripts []string
++	// [rgb-arkade patch 1] CheckpointOpReturn is an optional 32-byte payload (e.g. an RGB opret
++	// commitment) added to the checkpoint tx as a 0-value `OP_RETURN <32 bytes>` output. It is
++	// placed FIRST (outputs: [OP_RETURN, checkpoint, anchor]) because RGB opret1st requires the
++	// commitment to be the first DBC-compatible output (a P2TR output before it is rejected).
++	// It is part of the deterministic rebuild, so the checkpoint txid commits to it.
++	CheckpointOpReturn []byte
++}
++
++// CheckpointOpReturnSize is the only accepted size of a checkpoint OP_RETURN payload.
++const CheckpointOpReturnSize = 32
++
++// CheckpointOutputIndex returns the vout of the checkpoint output of a checkpoint tx: 1 if the
++// tx carries a user OP_RETURN (always placed first), 0 otherwise (upstream layout).
++func CheckpointOutputIndex(tx *wire.MsgTx) uint32 {
++	if len(tx.TxOut) > 1 && len(tx.TxOut[0].PkScript) > 0 &&
++		tx.TxOut[0].PkScript[0] == txscript.OP_RETURN {
++		return 1
++	}
++	return 0
++}
++
++// ExtractCheckpointOpReturn returns the payload of the optional user OP_RETURN of a checkpoint
++// tx (nil if there is none). It errors if the tx carries a malformed or extra OP_RETURN.
++func ExtractCheckpointOpReturn(tx *wire.MsgTx) ([]byte, error) {
++	var payload []byte
++	for i, out := range tx.TxOut {
++		if len(out.PkScript) == 0 || out.PkScript[0] != txscript.OP_RETURN {
++			continue
++		}
++		if payload != nil {
++			return nil, fmt.Errorf("checkpoint tx has more than one OP_RETURN output")
++		}
++		if out.Value != 0 || len(out.PkScript) != 2+CheckpointOpReturnSize ||
++			out.PkScript[1] != txscript.OP_DATA_32 {
++			return nil, fmt.Errorf("invalid checkpoint OP_RETURN output #%d", i)
++		}
++		payload = append([]byte{}, out.PkScript[2:]...)
++	}
++	return payload, nil
+ }
+ 
+ // BuildTxs builds the ark and checkpoint txs for the given inputs and outputs.
+@@ -194,10 +233,23 @@ func buildCheckpointTx(
+ 		return nil, nil, err
+ 	}
+ 
++	checkpointOuts := []*wire.TxOut{{Value: vtxo.Amount, PkScript: checkpointPkScript}}
++	if len(vtxo.CheckpointOpReturn) > 0 {
++		if len(vtxo.CheckpointOpReturn) != CheckpointOpReturnSize {
++			return nil, nil, fmt.Errorf(
++				"checkpoint OP_RETURN payload must be %d bytes, got %d",
++				CheckpointOpReturnSize, len(vtxo.CheckpointOpReturn),
++			)
++		}
++		opret, err := txscript.NullDataScript(vtxo.CheckpointOpReturn)
++		if err != nil {
++			return nil, nil, err
++		}
++		checkpointOuts = append([]*wire.TxOut{{Value: 0, PkScript: opret}}, checkpointOuts...)
++	}
++
+ 	// build the checkpoint virtual tx
+-	checkpointPtx, err := buildArkTx(
+-		[]VtxoInput{vtxo}, []*wire.TxOut{{Value: vtxo.Amount, PkScript: checkpointPkScript}},
+-	)
++	checkpointPtx, err := buildArkTx([]VtxoInput{vtxo}, checkpointOuts)
+ 	if err != nil {
+ 		return nil, nil, err
+ 	}
+@@ -225,7 +277,7 @@ func buildCheckpointTx(
+ 	checkpointInput := &VtxoInput{
+ 		Outpoint: &wire.OutPoint{
+ 			Hash:  checkpointPtx.UnsignedTx.TxHash(),
+-			Index: 0,
++			Index: CheckpointOutputIndex(checkpointPtx.UnsignedTx),
+ 		},
+ 		Amount: vtxo.Amount,
+ 		Tapscript: &waddrmgr.Tapscript{
+diff --git a/pkg/ark-lib/script/script.go b/pkg/ark-lib/script/script.go
+index 0f228b5e..78693a4b 100644
+--- a/pkg/ark-lib/script/script.go
++++ b/pkg/ark-lib/script/script.go
+@@ -123,6 +123,13 @@ func SubDustScript(taprootKey *btcec.PublicKey) ([]byte, error) {
+ 		Script()
+ }
+ 
++// IsDataOpReturn reports whether an output is a 0-value OP_RETURN "data" output.
++// [rgb-arkade patch 2] Such outputs (e.g. an RGB opret commitment) are never VTXOs: a sub-dust
++// VTXO must carry at least vtxoMinAmount (> 0), so a 0-value OP_RETURN is unambiguous.
++func IsDataOpReturn(value int64, script []byte) bool {
++	return value == 0 && len(script) > 0 && script[0] == txscript.OP_RETURN
++}
++
+ func IsSubDustScript(script []byte) bool {
+ 	tokenizer := txscript.MakeScriptTokenizer(0, script)
+ 	if !tokenizer.Next() || tokenizer.Opcode() != txscript.OP_RETURN {
+diff --git a/pkg/ark-lib/tree/forfeit_tx.go b/pkg/ark-lib/tree/forfeit_tx.go
+index b5479dd2..fcebfa28 100644
+--- a/pkg/ark-lib/tree/forfeit_tx.go
++++ b/pkg/ark-lib/tree/forfeit_tx.go
+@@ -1,11 +1,64 @@
+ package tree
+ 
+ import (
++	"fmt"
++
+ 	"github.com/arkade-os/arkd/pkg/ark-lib/txutils"
+ 	"github.com/btcsuite/btcd/btcutil/psbt"
++	"github.com/btcsuite/btcd/txscript"
+ 	"github.com/btcsuite/btcd/wire"
+ )
+ 
++// ForfeitOpReturnSize is the only accepted size of a forfeit OP_RETURN payload.
++const ForfeitOpReturnSize = 32
++
++// [rgb-arkade patch 4] BuildForfeitTxWithOpReturn is BuildForfeitTx with an optional user
++// payload (e.g. an RGB opret commitment moving an asset from the forfeited VTXO to its
++// replacement). With a payload the outputs are [OP_RETURN <32B> (0 sat), forfeit, anchor]: the
++// OP_RETURN goes first because RGB opret1st requires it to precede any DBC-compatible (P2TR)
++// output. Without a payload the tx is identical to BuildForfeitTx.
++func BuildForfeitTxWithOpReturn(
++	inputs []*wire.OutPoint, sequences []uint32, prevouts []*wire.TxOut,
++	signerScript []byte, txLocktime uint32, opReturn []byte,
++) (*psbt.Packet, error) {
++	ptx, err := BuildForfeitTx(inputs, sequences, prevouts, signerScript, txLocktime)
++	if err != nil || len(opReturn) == 0 {
++		return ptx, err
++	}
++	if len(opReturn) != ForfeitOpReturnSize {
++		return nil, fmt.Errorf(
++			"forfeit OP_RETURN payload must be %d bytes, got %d", ForfeitOpReturnSize, len(opReturn),
++		)
++	}
++	opret, err := txscript.NullDataScript(opReturn)
++	if err != nil {
++		return nil, err
++	}
++	ptx.UnsignedTx.TxOut = append([]*wire.TxOut{{Value: 0, PkScript: opret}}, ptx.UnsignedTx.TxOut...)
++	ptx.Outputs = append([]psbt.POutput{{}}, ptx.Outputs...)
++	return ptx, nil
++}
++
++// ExtractForfeitOpReturn returns the optional user OP_RETURN payload of a forfeit tx (nil if
++// none). At most one OP_RETURN is allowed and it must be a 0-value `OP_RETURN PUSH32`.
++func ExtractForfeitOpReturn(tx *wire.MsgTx) ([]byte, error) {
++	var payload []byte
++	for i, out := range tx.TxOut {
++		if len(out.PkScript) == 0 || out.PkScript[0] != txscript.OP_RETURN {
++			continue
++		}
++		if payload != nil {
++			return nil, fmt.Errorf("forfeit tx has more than one OP_RETURN output")
++		}
++		if out.Value != 0 || len(out.PkScript) != 2+ForfeitOpReturnSize ||
++			out.PkScript[1] != txscript.OP_DATA_32 {
++			return nil, fmt.Errorf("invalid forfeit OP_RETURN output #%d", i)
++		}
++		payload = append([]byte{}, out.PkScript[2:]...)
++	}
++	return payload, nil
++}
++
+ func BuildForfeitTx(
+ 	inputs []*wire.OutPoint, sequences []uint32, prevouts []*wire.TxOut,
+ 	signerScript []byte, txLocktime uint32,

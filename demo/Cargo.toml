@@ -1,0 +1,32 @@
+[package]
+name = "ark-rgb-demo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ark-client = { path = "../vendor/rust-sdk/ark-client" }
+ark-core = { path = "../vendor/rust-sdk/ark-core" }
+ark-grpc = { path = "../vendor/rust-sdk/ark-grpc" }
+ark-bdk-wallet = { path = "../vendor/rust-sdk/ark-bdk-wallet" }
+rgb-lib = { path = "../vendor/rgb-lib", default-features = false, features = ["electrum"] }
+bitcoin = { version = "0.32.7", features = ["rand", "serde"] }
+esplora-client = { version = "0.10.0", default-features = false, features = ["blocking-https"] }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = "0.8"
+hex = "0.4"
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+base64 = "0.22"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+minreq = { version = "2", features = ["json-using-serde"] }
+libc = "0.2"
+
+[profile.dev]
+debug = 0
+incremental = false

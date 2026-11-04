@@ -1,0 +1,16 @@
+target/
+vendor
+arkade-regtest
+arkd-image/arkd
+tools/arkdb
+state/
+logs/
+watchtowerd/
+watchtowerd.prev-*/
+*.rgbc
+*.arkproof.json
+.env
+__pycache__/
+arkd-image-cponly/arkd
+.DS_Store
+node_modules/

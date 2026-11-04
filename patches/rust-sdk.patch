@@ -1,0 +1,845 @@
+diff --git a/ark-client/src/batch.rs b/ark-client/src/batch.rs
+index 477dd4f..87dc848 100644
+--- a/ark-client/src/batch.rs
++++ b/ark-client/src/batch.rs
+@@ -10,7 +10,18 @@ use crate::GetVtxosRequestFilter;
+ use ark_core::batch;
+ use ark_core::batch::aggregate_nonces;
+ use ark_core::batch::complete_delegate_forfeit_txs;
+-use ark_core::batch::create_and_sign_forfeit_txs;
++
++use ark_core::batch::create_and_sign_forfeit_txs_with_hook;
++
++/// [rgb-arkade] Context handed to a forfeit hook: the forfeited VTXO, the unsigned
++/// commitment tx of the batch and the leaves of the batch VTXO tree (empty if the batch has no
++/// VTXO outputs). From these the hook can locate the replacement VTXO (refresh) or the on-chain
++/// output (collaborative exit) before the forfeit is signed.
++pub struct ForfeitHookContext<'a> {
++    pub vtxo: OutPoint,
++    pub commitment_tx: &'a bitcoin::Transaction,
++    pub vtxo_tree_leaves: &'a [bitcoin::Transaction],
++}
+ use ark_core::batch::create_asset_preservation_packet;
+ use ark_core::batch::generate_nonce_tree;
+ use ark_core::batch::sign_batch_tree_tx;
+@@ -563,7 +574,8 @@ where
+                     entry.tapscripts(),
+                     spend_selection,
+                     false,
+-                    entry.vtxo().is_swept,
++                    // [rgb-arkade: recovery-forfeit] RGB recovery: forfeit swept VTXOs too
++                    entry.vtxo().is_swept && !intent::rgb_recovery_forfeit(),
+                     entry.vtxo().assets.clone(),
+                 ))
+             })
+@@ -1385,6 +1397,22 @@ where
+         })
+     }
+ 
++    /// [rgb-arkade: recovery-forfeit] Public view of the batch-settleable inputs for `outpoints` (tests).
++    pub async fn rgb_settleable_inputs(&self, outpoints: &[OutPoint]) -> Result<Vec<intent::Input>, Error> {
++        let server_info = self.server_info().await?;
++        self.selected_batch_settleable_vtxo_inputs(&server_info, outpoints.iter().copied()).await
++    }
++
++    /// [rgb-arkade: recovery-forfeit] Sign an intent with this client's keys (tests).
++    pub fn rgb_sign_intent(
++        &self,
++        inputs: Vec<intent::Input>,
++        outputs: Vec<intent::Output>,
++        message: intent::IntentMessage,
++    ) -> Result<intent::Intent, Error> {
++        self.sign_intent(&[], inputs, outputs, message)
++    }
++
+     /// Build and sign the proof of an intent over `inputs`: every VTXO input is signed by the
+     /// keys this client holds for it, every boarding input (`onchain_inputs`) by its owner key.
+     fn sign_intent(
+@@ -1564,6 +1592,106 @@ where
+     ) -> Result<Txid, Error>
+     where
+         R: Rng + CryptoRng,
++    {
++        self.join_next_batch_with_hook(
++            rng,
++            server_info,
++            onchain_inputs,
++            vtxo_inputs,
++            output_type,
++            &mut |_: &ForfeitHookContext<'_>, _: &mut Psbt| Ok(()),
++        )
++        .await
++    }
++
++    /// [rgb-arkade] Settle the given VTXOs into the next batch, paying everything to
++    /// `to_address`, with `forfeit_hook` run on every forfeit PSBT before signing. Single
++    /// attempt (no retry). Returns the commitment txid.
++    pub async fn settle_vtxos_with_forfeit_hook<R, H>(
++        &self,
++        rng: &mut R,
++        vtxo_outpoints: &[OutPoint],
++        to_address: ArkAddress,
++        forfeit_hook: &mut H,
++    ) -> Result<Txid, Error>
++    where
++        R: Rng + CryptoRng + Clone,
++        H: FnMut(&ForfeitHookContext<'_>, &mut Psbt) -> Result<(), ark_core::Error>,
++    {
++        let server_info = self.server_info().await?;
++        let vtxo_inputs = self
++            .selected_batch_settleable_vtxo_inputs(&server_info, vtxo_outpoints.iter().copied())
++            .await?;
++        if vtxo_inputs.len() != vtxo_outpoints.len() {
++            return Err(Error::ad_hoc("not all requested VTXOs are settleable"));
++        }
++        let to_amount = vtxo_inputs.iter().fold(Amount::ZERO, |acc, v| acc + v.amount());
++        self.join_next_batch_with_hook(
++            rng,
++            &server_info,
++            Vec::new(),
++            vtxo_inputs,
++            BatchOutputType::Board { to_address, to_amount },
++            forfeit_hook,
++        )
++        .await
++    }
++
++    /// [rgb-arkade] Collaborative exit of the given VTXOs: `to_amount` to the on-chain
++    /// `to_address`, the rest (minus the server's on-chain output fee) to an offchain change
++    /// address, with `forfeit_hook` run on every forfeit PSBT before signing. Single attempt.
++    pub async fn collaborative_redeem_vtxos_with_forfeit_hook<R, H>(
++        &self,
++        rng: &mut R,
++        vtxo_outpoints: &[OutPoint],
++        to_address: Address,
++        to_amount: Amount,
++        forfeit_hook: &mut H,
++    ) -> Result<Txid, Error>
++    where
++        R: Rng + CryptoRng + Clone,
++        H: FnMut(&ForfeitHookContext<'_>, &mut Psbt) -> Result<(), ark_core::Error>,
++    {
++        let server_info = self.server_info().await?;
++        let (change_address, _) = self.get_offchain_address_with_server_info(&server_info)?;
++        let vtxo_inputs = self
++            .selected_batch_settleable_vtxo_inputs(&server_info, vtxo_outpoints.iter().copied())
++            .await?;
++        if vtxo_inputs.len() != vtxo_outpoints.len() {
++            return Err(Error::ad_hoc("not all requested VTXOs are settleable"));
++        }
++        let total = vtxo_inputs.iter().fold(Amount::ZERO, |acc, v| acc + v.amount());
++        let onchain_fee = self.eval_onchain_output_fee(ark_fees::Output {
++            amount: to_amount.to_sat(),
++            script: to_address.script_pubkey().to_string(),
++        })?;
++        let change_amount = total
++            .checked_sub(to_amount)
++            .and_then(|a| a.checked_sub(onchain_fee))
++            .ok_or_else(|| Error::coin_select("insufficient VTXO amount"))?;
++        self.join_next_batch_with_hook(
++            rng,
++            &server_info,
++            Vec::new(),
++            vtxo_inputs,
++            BatchOutputType::OffBoard { to_address, to_amount, change_address, change_amount },
++            forfeit_hook,
++        )
++        .await
++    }
++
++    pub(crate) async fn join_next_batch_with_hook<R, H>(
++        &self,
++        rng: &mut R,
++        server_info: &server::Info,
++        onchain_inputs: Vec<batch::OnChainInput>,
++        vtxo_inputs: Vec<intent::Input>,
++        output_type: BatchOutputType,
++        forfeit_hook: &mut H,
++    ) -> Result<Txid, Error>
++    where
++        R: Rng + CryptoRng,
++        H: FnMut(&ForfeitHookContext<'_>, &mut Psbt) -> Result<(), ark_core::Error>,
+     {
+         let prepared = self.prepare_intent(
+             rng,
+@@ -1991,7 +2119,22 @@ where
+ 
+                                 tracing::debug!(batch_id = e.id, "Batch finalization started");
+ 
+-                                create_and_sign_forfeit_txs(
++                                let hook_commitment_tx = e.commitment_tx.unsigned_tx.clone();
++                                let hook_leaves: Vec<bitcoin::Transaction> = vtxo_batch_tree_graph
++                                    .as_ref()
++                                    .map(|g| g.leaves().into_iter().map(|p| p.unsigned_tx.clone()).collect())
++                                    .unwrap_or_default();
++                                let mut core_hook = |vtxo: OutPoint, p: &mut Psbt| {
++                                    forfeit_hook(
++                                        &ForfeitHookContext {
++                                            vtxo,
++                                            commitment_tx: &hook_commitment_tx,
++                                            vtxo_tree_leaves: &hook_leaves,
++                                        },
++                                        p,
++                                    )
++                                };
++                                create_and_sign_forfeit_txs_with_hook(
+                                     |input: &mut psbt::Input, msg: secp256k1::Message| match &input
+                                     .witness_script
+                                 {
+@@ -2016,6 +2159,7 @@ where
+                                     &connectors_graph.leaves(),
+                                     &server_info.forfeit_address,
+                                     server_info.dust,
++                                    &mut core_hook,
+                                 )
+                                 .map_err(Error::from)?
+                             }
+diff --git a/ark-client/src/coin_select.rs b/ark-client/src/coin_select.rs
+index 67dedc0..60133a4 100644
+--- a/ark-client/src/coin_select.rs
++++ b/ark-client/src/coin_select.rs
+@@ -155,3 +155,109 @@ where
+         selected_vtxo_outputs.into_iter().collect(),
+     ))
+ }
++
++/// [rgb-arkade] Select exactly `outpoints` (boarding outputs or unilaterally exited
++/// VTXOs of this wallet) as on-chain inputs, failing unless every one of them is confirmed, unspent
++/// and already claimable through the exit path.
++///
++/// [`coin_select_for_onchain`] stops as soon as the target amount is covered, so when several
++/// exited outputs pay the same contract it may pick any of them: e.g. unrolling a VTXO that came
++/// through a chain of Arkade txs also puts the owner's earlier (change) outputs of those txs
++/// on-chain, and they mature first. A caller that must spend a particular output (an RGB seal)
++/// has to name it.
++pub async fn coin_select_exact_for_onchain<B, W, S>(
++    client: &Client<B, W, S>,
++    outpoints: &[bitcoin::OutPoint],
++) -> Result<
++    (
++        Vec<unilateral_exit::OnChainInput>,
++        Vec<unilateral_exit::VtxoInput>,
++    ),
++    Error,
++>
++where
++    B: Blockchain,
++    W: OnchainWallet,
++    S: SwapStorage + 'static,
++{
++    let now: Duration = Timestamp::now()
++        .as_duration()
++        .try_into()
++        .map_err(Error::ad_hoc)?;
++    let mut onchain = Vec::new();
++    let mut vtxos = Vec::new();
++    let mut found = HashSet::new();
++    let mut pending = Vec::new();
++
++    for boarding_output in client.boarding_outputs()?.iter() {
++        for o in client
++            .blockchain()
++            .find_outpoints(boarding_output.address())
++            .await?
++        {
++            if !outpoints.contains(&o.outpoint) || o.is_spent || !found.insert(o.outpoint) {
++                continue;
++            }
++            match o.confirmation_blocktime {
++                Some(t)
++                    if boarding_output.can_be_claimed_unilaterally_by_owner(
++                        now,
++                        Duration::from_secs(t),
++                        o.confirmations,
++                    ) =>
++                {
++                    onchain.push(unilateral_exit::OnChainInput::new_with_spend_selection(
++                        boarding_output.exit_delay(),
++                        boarding_output.script_pubkey(),
++                        boarding_output.spend_selection(SpendPathKind::Exit)?,
++                        o.amount,
++                        o.outpoint,
++                    ));
++                }
++                _ => pending.push(o.outpoint),
++            }
++        }
++    }
++
++    for contract in client.active_offchain_contracts()? {
++        let vtxo = &contract.vtxo;
++        for o in client.blockchain().find_outpoints(vtxo.address()).await? {
++            if !outpoints.contains(&o.outpoint) || o.is_spent || !found.insert(o.outpoint) {
++                continue;
++            }
++            match o.confirmation_blocktime {
++                Some(t)
++                    if vtxo.can_be_claimed_unilaterally_by_owner(
++                        now,
++                        Duration::from_secs(t),
++                        o.confirmations,
++                    ) =>
++                {
++                    vtxos.push(unilateral_exit::VtxoInput::new_with_spend_selection(
++                        o.outpoint,
++                        vtxo.exit_delay(),
++                        TxOut {
++                            value: o.amount,
++                            script_pubkey: vtxo.script_pubkey(),
++                        },
++                        contract.spend_selection(SpendPathKind::Exit)?,
++                    ));
++                }
++                _ => pending.push(o.outpoint),
++            }
++        }
++    }
++
++    if !pending.is_empty() {
++        return Err(Error::coin_select(format!(
++            "outputs not claimable yet (exit delay): {pending:?}"
++        )));
++    }
++    let missing: Vec<_> = outpoints.iter().filter(|o| !found.contains(o)).collect();
++    if !missing.is_empty() {
++        return Err(Error::coin_select(format!(
++            "outputs not found among this wallet's unspent on-chain boarding/exited outputs: {missing:?}"
++        )));
++    }
++    Ok((onchain, vtxos))
++}
+diff --git a/ark-client/src/lib.rs b/ark-client/src/lib.rs
+index bb30951..8955dd2 100644
+--- a/ark-client/src/lib.rs
++++ b/ark-client/src/lib.rs
+@@ -78,6 +78,7 @@ pub use ark_core::server::DeprecatedSignerStatus;
+ pub use ark_core::server::GetVtxosRequestFilter;
+ pub use ark_core::server::ServerSignerStatus;
+ pub use asset::IssueAssetResult;
++pub use batch::ForfeitHookContext;
+ pub use boltz::BoltzVhtlcWatcherConfig;
+ pub use boltz::BoltzVhtlcWatcherHandle;
+ pub use boltz::ChainSwapAmount;
+diff --git a/ark-client/src/send_vtxo.rs b/ark-client/src/send_vtxo.rs
+index 65009bb..563b8dd 100644
+--- a/ark-client/src/send_vtxo.rs
++++ b/ark-client/src/send_vtxo.rs
+@@ -259,6 +259,20 @@ where
+         }
+     }
+ 
++    /// [rgb-arkade: multi-party] Sign `inputs` of an Arkade tx built from several owners' VTXOs;
++    /// the other inputs are left for their owners.
++    pub fn sign_ark_tx_inputs(&self, ark_tx: &mut bitcoin::Psbt, inputs: &[usize]) -> Result<(), Error> {
++        for i in inputs {
++            sign_ark_transaction(self.make_sign_fn(), ark_tx, *i)?;
++        }
++        Ok(())
++    }
++
++    /// [rgb-arkade: multi-party] Sign this client's (server-signed) checkpoint tx of such an Arkade tx.
++    pub fn sign_checkpoint_tx(&self, checkpoint: &mut bitcoin::Psbt) -> Result<(), Error> {
++        Ok(sign_checkpoint_transaction(self.make_sign_fn(), checkpoint)?)
++    }
++
+     async fn auto_select_send_inputs(
+         &self,
+         receivers: &[SendReceiver],
+@@ -369,7 +383,7 @@ where
+         Ok(inputs)
+     }
+ 
+-    async fn resolve_selected_send_inputs(
++    pub async fn resolve_selected_send_inputs(
+         &self,
+         vtxo_outpoints: &[OutPoint],
+     ) -> Result<Vec<VtxoInput>, Error> {
+@@ -532,7 +546,7 @@ where
+     ///
+     /// Returns the pending transaction payload from the server. The change-address key is marked
+     /// as used.
+-    pub(crate) async fn submit_built_offchain_send(
++    pub async fn submit_built_offchain_send(
+         &self,
+         mut ark_tx: bitcoin::Psbt,
+         checkpoint_txs: Vec<bitcoin::Psbt>,
+@@ -588,7 +602,7 @@ where
+     }
+ 
+     /// Sign checkpoint transactions from a [`PendingTx`] and finalize.
+-    pub(crate) async fn sign_and_finalize_pending_tx(
++    pub async fn sign_and_finalize_pending_tx(
+         &self,
+         pending_tx: PendingTx,
+     ) -> Result<(), Error> {
+diff --git a/ark-client/src/unilateral_exit.rs b/ark-client/src/unilateral_exit.rs
+index 4887cf1..3c03443 100644
+--- a/ark-client/src/unilateral_exit.rs
++++ b/ark-client/src/unilateral_exit.rs
+@@ -250,6 +250,66 @@ where
+             .await
+     }
+ 
++    /// [rgb-arkade] Build and sign (but do not broadcast) a transaction spending
++    /// unilaterally-exited VTXOs / boarding outputs on-chain, with `pre_outputs` placed first, an
++    /// explicit `fee`, and a `pre_sign_hook` run on the unsigned PSBT (used to RGB-color it).
++    ///
++    /// `inputs`: the exact outputs to spend (e.g. the RGB-colored exited VTXO); fails until all of
++    /// them are claimable. Empty: plain coin selection over every claimable output.
++    pub async fn create_send_on_chain_transaction_with_hook<H>(
++        &self,
++        to_address: Address,
++        to_amount: Amount,
++        pre_outputs: Vec<TxOut>,
++        fee: Amount,
++        inputs: &[bitcoin::OutPoint],
++        pre_sign_hook: H,
++    ) -> Result<(Transaction, Vec<TxOut>), Error>
++    where
++        H: FnOnce(&mut bitcoin::Psbt) -> Result<(), ark_core::Error>,
++    {
++        let pre_amount: Amount = pre_outputs.iter().map(|o| o.value).sum();
++        let (onchain_inputs, vtxo_inputs) = if inputs.is_empty() {
++            coin_select_for_onchain(self, to_amount + fee + pre_amount).await?
++        } else {
++            crate::coin_select::coin_select_exact_for_onchain(self, inputs).await?
++        };
++        let change_address = self.inner.wallet.get_onchain_address()?;
++        let sign = move |input: &mut psbt::Input, msg: bitcoin::secp256k1::Message| match &input
++            .witness_script
++        {
++            None => Err(ark_core::Error::ad_hoc("Missing witness script")),
++            Some(script) => {
++                let mut res = vec![];
++                for pk in extract_checksig_pubkeys(script) {
++                    if let Ok(keypair) = self.keypair_by_pk(&pk) {
++                        let sig = Secp256k1::new().sign_schnorr_no_aux_rand(&msg, &keypair);
++                        res.push((sig, keypair.x_only_public_key().0))
++                    }
++                }
++                Ok(res)
++            }
++        };
++        let tx = unilateral_exit::create_unilateral_exit_transaction_with_hook(
++            to_address,
++            to_amount,
++            change_address,
++            &onchain_inputs,
++            &vtxo_inputs,
++            pre_outputs,
++            fee,
++            pre_sign_hook,
++            sign,
++        )
++        .map_err(Error::from)?;
++        let prevouts = onchain_inputs
++            .iter()
++            .map(unilateral_exit::OnChainInput::previous_output)
++            .chain(vtxo_inputs.iter().map(unilateral_exit::VtxoInput::previous_output))
++            .collect();
++        Ok((tx, prevouts))
++    }
++
+     pub(crate) async fn create_send_on_chain_transaction_inner(
+         &self,
+         to_address: Address,
+diff --git a/ark-core/src/batch.rs b/ark-core/src/batch.rs
+index 65a90c0..4306d0c 100644
+--- a/ark-core/src/batch.rs
++++ b/ark-core/src/batch.rs
+@@ -360,12 +360,41 @@ pub fn sign_batch_tree_tx(
+ /// Build and sign a forfeit transaction per [`VtxoInput`] to be used in an upcoming commitment
+ /// transaction.
+ pub fn create_and_sign_forfeit_txs<S>(
++    sign_fn: S,
++    vtxo_inputs: &[intent::Input],
++    connectors_leaves: &[&Psbt],
++    server_forfeit_address: &Address,
++    // As defined by the server.
++    dust: Amount,
++) -> Result<Vec<Psbt>, Error>
++where
++    S: FnMut(
++        &mut psbt::Input,
++        secp256k1::Message,
++    ) -> Result<Vec<(schnorr::Signature, XOnlyPublicKey)>, Error>,
++{
++    create_and_sign_forfeit_txs_with_hook(
++        sign_fn,
++        vtxo_inputs,
++        connectors_leaves,
++        server_forfeit_address,
++        dust,
++        &mut |_, _| Ok(()),
++    )
++}
++
++/// [rgb-arkade] Like [`create_and_sign_forfeit_txs`], but `hook(vtxo_outpoint, psbt)` runs
++/// on each unsigned forfeit PSBT before it is signed, e.g. to insert a 0-value
++/// `OP_RETURN <32B>` at output index 0 carrying an RGB commitment (arkd `arkd:rgb` rebuilds
++/// forfeits with it). The VTXO signature (SIGHASH_DEFAULT) then commits to it.
++pub fn create_and_sign_forfeit_txs_with_hook<S>(
+     mut sign_fn: S,
+     vtxo_inputs: &[intent::Input],
+     connectors_leaves: &[&Psbt],
+     server_forfeit_address: &Address,
+     // As defined by the server.
+     dust: Amount,
++    hook: &mut dyn FnMut(OutPoint, &mut Psbt) -> Result<(), Error>,
+ ) -> Result<Vec<Psbt>, Error>
+ where
+     S: FnMut(
+@@ -438,6 +467,8 @@ where
+         })
+         .map_err(Error::transaction)?;
+ 
++        hook(outpoint, &mut forfeit_psbt)?;
++
+         forfeit_psbt.inputs[FORFEIT_TX_CONNECTOR_INDEX].witness_utxo =
+             Some(connector_output.clone());
+ 
+diff --git a/ark-core/src/intent.rs b/ark-core/src/intent.rs
+index 6657dc1..038e1f9 100644
+--- a/ark-core/src/intent.rs
++++ b/ark-core/src/intent.rs
+@@ -488,8 +488,25 @@ pub enum IntentMessage {
+     GetPendingTx { expire_at: u64 },
+ }
+ 
++/// [rgb-arkade: recovery-forfeit] When set, register intents carry `"rgb_recovery_forfeit": true` and swept
++/// VTXOs are forfeited like live ones (arkd recovery-forfeit change), so the forfeit can carry the RGB
++/// transition of a swept colored VTXO into the new batch.
++pub static RGB_RECOVERY_FORFEIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
++
++pub fn rgb_recovery_forfeit() -> bool {
++    RGB_RECOVERY_FORFEIT.load(std::sync::atomic::Ordering::SeqCst)
++}
++
+ impl IntentMessage {
+     pub fn encode(&self) -> Result<String, Error> {
++        if let (IntentMessage::Register { .. }, true) = (self, rgb_recovery_forfeit()) {
++            // keep arkd's field order (it re-encodes the Go struct, new field last)
++            let s = serde_json::to_string(self)
++                .map_err(Error::ad_hoc)
++                .context("failed to serialize intent message to JSON")?;
++            let body = s.strip_suffix('}').ok_or_else(|| Error::ad_hoc("bad intent json"))?;
++            return Ok(format!("{body},\"rgb_recovery_forfeit\":true}}"));
++        }
+         serde_json::to_string(self)
+             .map_err(Error::ad_hoc)
+             .context("failed to serialize intent message to JSON")
+diff --git a/ark-core/src/send.rs b/ark-core/src/send.rs
+index 479464c..d7506a7 100644
+--- a/ark-core/src/send.rs
++++ b/ark-core/src/send.rs
+@@ -69,6 +69,10 @@ pub struct VtxoInput {
+     outpoint: OutPoint,
+     /// All the assets carried by this VTXO.
+     assets: Vec<Asset>,
++    /// [rgb-arkade] Optional 32-byte payload (e.g. an RGB opret commitment) emitted in the
++    /// checkpoint tx as a 0-value `OP_RETURN <32 bytes>` at index 0 (checkpoint output moves to 1). Requires
++    /// an arkd that rebuilds checkpoints with it (`arkd:rgb`).
++    checkpoint_op_return: Option<[u8; 32]>,
+ }
+ 
+ impl VtxoInput {
+@@ -91,9 +95,20 @@ impl VtxoInput {
+             amount,
+             outpoint,
+             assets,
++            checkpoint_op_return: None,
+         }
+     }
+ 
++    /// [rgb-arkade] Set (or clear) the checkpoint OP_RETURN payload for this input.
++    pub fn with_checkpoint_op_return(mut self, payload: Option<[u8; 32]>) -> Self {
++        self.checkpoint_op_return = payload;
++        self
++    }
++
++    pub fn checkpoint_op_return(&self) -> Option<[u8; 32]> {
++        self.checkpoint_op_return
++    }
++
+     pub fn new_with_spend_selection(
+         spend_selection: SpendSelection,
+         tapscripts: Vec<ScriptBuf>,
+@@ -305,7 +320,7 @@ pub fn build_offchain_transactions(
+             .map(|(psbt, _)| TxIn {
+                 previous_output: OutPoint {
+                     txid: psbt.unsigned_tx.compute_txid(),
+-                    vout: 0,
++                    vout: checkpoint_output_index(&psbt.unsigned_tx) as u32,
+                 },
+                 script_sig: Default::default(),
+                 sequence,
+@@ -322,7 +337,7 @@ pub fn build_offchain_transactions(
+         // Set checkpoint output as `witness_utxo` field.
+ 
+         unsigned_ark_psbt.inputs[i].witness_utxo =
+-            Some(checkpoint_psbt.unsigned_tx.output[0].clone());
++            Some(checkpoint_psbt.unsigned_tx.output[checkpoint_output_index(&checkpoint_psbt.unsigned_tx)].clone());
+ 
+         // Set script to be used in `tap_scripts` field for spending the checkpoint output.
+ 
+@@ -426,13 +441,21 @@ fn build_checkpoint_psbt(
+ 
+     let checkpoint_spend_info = CheckpointSpendInfo::new(vtxo_input, checkpoint_exit_script);
+ 
+-    let outputs = vec![
+-        TxOut {
+-            value: vtxo_input.amount,
+-            script_pubkey: checkpoint_spend_info.script_pubkey(),
+-        },
+-        anchor_output(),
+-    ];
++    let mut outputs = vec![];
++    if let Some(payload) = vtxo_input.checkpoint_op_return {
++        // must match arkd's deterministic rebuild: [OP_RETURN <32B> (0 sat), checkpoint, anchor].
++        // The OP_RETURN goes first: RGB opret1st requires it to be the first DBC-compatible
++        // output (it would otherwise be the P2TR checkpoint output).
++        outputs.push(TxOut {
++            value: Amount::ZERO,
++            script_pubkey: ScriptBuf::new_op_return(payload),
++        });
++    }
++    outputs.push(TxOut {
++        value: vtxo_input.amount,
++        script_pubkey: checkpoint_spend_info.script_pubkey(),
++    });
++    outputs.push(anchor_output());
+ 
+     let unsigned_tx = Transaction {
+         version: transaction::Version::non_standard(3),
+@@ -492,6 +515,15 @@ fn build_checkpoint_psbt(
+     Ok((unsigned_checkpoint_psbt, checkpoint_spend_info))
+ }
+ 
++/// [rgb-arkade] Vout of the checkpoint output: 1 when the checkpoint carries a user
++/// OP_RETURN (placed first), 0 otherwise (upstream layout).
++pub fn checkpoint_output_index(tx: &Transaction) -> usize {
++    match tx.output.first() {
++        Some(o) if tx.output.len() > 1 && o.script_pubkey.is_op_return() => 1,
++        _ => 0,
++    }
++}
++
+ fn write_compact_size_uint<W: Write>(w: &mut W, val: u64) -> io::Result<()> {
+     if val < 253 {
+         w.write_all(&[val as u8])?;
+diff --git a/ark-core/src/unilateral_exit.rs b/ark-core/src/unilateral_exit.rs
+index bfcca79..22769dd 100644
+--- a/ark-core/src/unilateral_exit.rs
++++ b/ark-core/src/unilateral_exit.rs
+@@ -5,7 +5,6 @@ use crate::server;
+ use crate::Error;
+ use crate::ErrorContext;
+ use crate::VTXO_CONDITION_KEY;
+-use crate::VTXO_INPUT_INDEX;
+ use bitcoin::absolute::LockTime;
+ use bitcoin::consensus::Decodable;
+ use bitcoin::hashes::Hash;
+@@ -159,6 +158,42 @@ where
+         &mut psbt::Input,
+         secp256k1::Message,
+     ) -> Result<Vec<(schnorr::Signature, XOnlyPublicKey)>, Error>,
++{
++    create_unilateral_exit_transaction_with_hook(
++        to_address,
++        to_amount,
++        change_address,
++        onchain_inputs,
++        vtxo_inputs,
++        Vec::new(),
++        Amount::ZERO,
++        |_| Ok(()),
++        sign_fn,
++    )
++}
++
++/// [ark-rgb-demo local patch] Like [`create_unilateral_exit_transaction`], but:
++/// - `pre_outputs` are placed *before* the `to` and change outputs (e.g. an RGB opret host);
++/// - `fee` is subtracted from the change;
++/// - `pre_sign_hook` is called on the fully-populated, unsigned PSBT right before signing, so the
++///   caller can e.g. RGB-color it. The hook must not change inputs or output values.
++pub fn create_unilateral_exit_transaction_with_hook<S, H>(
++    to_address: Address,
++    to_amount: Amount,
++    change_address: Address,
++    onchain_inputs: &[OnChainInput],
++    vtxo_inputs: &[VtxoInput],
++    pre_outputs: Vec<TxOut>,
++    fee: Amount,
++    pre_sign_hook: H,
++    sign_fn: S,
++) -> Result<Transaction, Error>
++where
++    S: Fn(
++        &mut psbt::Input,
++        secp256k1::Message,
++    ) -> Result<Vec<(schnorr::Signature, XOnlyPublicKey)>, Error>,
++    H: FnOnce(&mut Psbt) -> Result<(), Error>,
+ {
+     if onchain_inputs.is_empty() && vtxo_inputs.is_empty() {
+         return Err(Error::transaction(
+@@ -168,10 +203,12 @@ where
+ 
+     let secp = Secp256k1::new();
+ 
+-    let mut output = vec![TxOut {
++    let pre_outputs_amount: Amount = pre_outputs.iter().map(|o| o.value).sum();
++    let mut output = pre_outputs;
++    output.push(TxOut {
+         value: to_amount,
+         script_pubkey: to_address.script_pubkey(),
+-    }];
++    });
+ 
+     let total_amount: Amount = onchain_inputs
+         .iter()
+@@ -179,7 +216,7 @@ where
+         .chain(vtxo_inputs.iter().map(|v| v.witness_utxo.value))
+         .sum();
+ 
+-    let change_amount = total_amount.checked_sub(to_amount).ok_or_else(|| {
++    let change_amount = total_amount.checked_sub(to_amount + fee + pre_outputs_amount).ok_or_else(|| {
+         Error::transaction(format!(
+             "cannot cover to_amount ({to_amount}) with total input amount ({total_amount})"
+         ))
+@@ -254,6 +291,8 @@ where
+         .filter_map(|i| i.witness_utxo.clone())
+         .collect::<Vec<_>>();
+ 
++    pre_sign_hook(&mut psbt)?;
++
+     // Sign each input.
+     for (i, input) in psbt.inputs.iter_mut().enumerate() {
+         let (exit_control_block, (exit_script, leaf_version)) = input
+@@ -593,6 +632,13 @@ pub fn finalize_virtual_tx_input(
+     input_index: usize,
+     witness_utxo: TxOut,
+ ) -> Result<Transaction, Error> {
++    finalize_psbt_input(&mut psbt, input_index, witness_utxo)?;
++    psbt.extract_tx().map_err(Error::transaction)
++}
++
++/// Finalize one input of a virtual tx in place.
++fn finalize_psbt_input(psbt: &mut Psbt, input_index: usize, witness_utxo: TxOut) -> Result<(), Error> {
++    let txid = psbt.unsigned_tx.compute_txid();
+     let input = psbt
+         .inputs
+         .get_mut(input_index)
+@@ -600,8 +646,6 @@ pub fn finalize_virtual_tx_input(
+ 
+     input.witness_utxo = Some(witness_utxo);
+ 
+-    let txid = psbt.unsigned_tx.compute_txid();
+-
+     if let Some(tap_key_sig) = input.tap_key_sig {
+         tracing::debug!(%txid, "Finalizing batch-tree internal node key spend");
+ 
+@@ -612,7 +656,7 @@ pub fn finalize_virtual_tx_input(
+         input.final_script_witness = Some(finalize_taproot_script_spend_witness(input)?);
+     }
+ 
+-    psbt.extract_tx().map_err(Error::transaction)
++    Ok(())
+ }
+ 
+ /// Build the final witness for a taproot script-spend input from its PSBT data.
+@@ -734,29 +778,25 @@ pub fn finalize_unilateral_exit_tree(
+     for unilateral_exit_branch in unilateral_exit_tree.inner.iter() {
+         let mut finalized_unilateral_exit_branch = Vec::new();
+         for virtual_tx in unilateral_exit_branch.iter() {
+-            let psbt = virtual_tx.clone();
+-
+-            let virtual_tx_previous_output =
+-                psbt.unsigned_tx.input[VTXO_INPUT_INDEX].previous_output;
+-
+-            let witness_utxo = {
+-                unilateral_exit_branch
++            // [rgb-arkade] an Arkade tx can spend several checkpoints (e.g. a swap with inputs
++            // from two owners): every input is finalized, each with its own parent output
++            let mut psbt = virtual_tx.clone();
++            for input_index in 0..psbt.inputs.len() {
++                let previous_output = psbt.unsigned_tx.input[input_index].previous_output;
++                let witness_utxo = unilateral_exit_branch
+                     .iter()
+                     .map(|p| &p.unsigned_tx)
+                     .chain(commitment_txs.iter())
+-                    .find_map(|other_psbt| {
+-                        (other_psbt.compute_txid() == virtual_tx_previous_output.txid).then_some(
+-                            other_psbt.output[virtual_tx_previous_output.vout as usize].clone(),
+-                        )
+-                    })
++                    .find(|other| other.compute_txid() == previous_output.txid)
++                    .and_then(|other| other.output.get(previous_output.vout as usize).cloned())
++                    .ok_or_else(|| {
++                        Error::ad_hoc(format!(
++                            "no witness UTXO found for virtual TX outpoint {previous_output}"
++                        ))
++                    })?;
++                finalize_psbt_input(&mut psbt, input_index, witness_utxo)?;
+             }
+-            .ok_or_else(|| {
+-                Error::ad_hoc(format!(
+-                    "no witness UTXO found for virtual TX outpoint {virtual_tx_previous_output}"
+-                ))
+-            })?;
+-
+-            let tx = finalize_virtual_tx_input(psbt, VTXO_INPUT_INDEX, witness_utxo)?;
++            let tx = psbt.extract_tx().map_err(Error::transaction)?;
+ 
+             finalized_unilateral_exit_branch.push(tx);
+         }
+diff --git a/ark-grpc/src/client.rs b/ark-grpc/src/client.rs
+index 9b6cf4b..b39bc5e 100644
+--- a/ark-grpc/src/client.rs
++++ b/ark-grpc/src/client.rs
+@@ -660,6 +660,46 @@ impl Client {
+         Ok(stream.boxed())
+     }
+ 
++    /// [rgb-arkade] TXIDs of the forfeit txs submitted for a commitment tx (indexer
++    /// `GetForfeitTxs`, first 1000).
++    pub async fn get_forfeit_txids(&self, commitment_txid: String) -> Result<Vec<String>, Error> {
++        let response = self
++            .indexer()?
++            .request(move |mut client| {
++                let txid = commitment_txid.clone();
++                async move {
++                    client
++                        .get_forfeit_txs(generated::ark::v1::GetForfeitTxsRequest {
++                            txid,
++                            page: Some(generated::ark::v1::IndexerPageRequest { size: 1000, index: 0 }),
++                        })
++                        .await
++                }
++            })
++            .await?;
++        Ok(response.into_inner().txids)
++    }
++
++    /// [rgb-arkade] TXIDs of the connector-tree txs of a commitment tx (indexer
++    /// `GetConnectors`, first 1000).
++    pub async fn get_connector_txids(&self, commitment_txid: String) -> Result<Vec<String>, Error> {
++        let response = self
++            .indexer()?
++            .request(move |mut client| {
++                let txid = commitment_txid.clone();
++                async move {
++                    client
++                        .get_connectors(generated::ark::v1::GetConnectorsRequest {
++                            txid,
++                            page: Some(generated::ark::v1::IndexerPageRequest { size: 1000, index: 0 }),
++                        })
++                        .await
++                }
++            })
++            .await?;
++        Ok(response.into_inner().connectors.into_iter().map(|n| n.txid).collect())
++    }
++
+     /// Get the chain of transactions for a VTXO.
+     ///
+     /// An [`IndexerAuth`] can be provided to prove ownership if the server requires it; when an
