@@ -1,6 +1,6 @@
 # Protobuf instead of JSON for out-of-band payloads
 
-Branch `protobuf-proof` (off `emulator-covenant` 8b345cc). Measured on regtest in the isolated dind
+Measured on regtest in the isolated dind
 stack on 2026-11-03, 12:48-13:05 CET, unless marked **unverified**.
 
 ## What changed

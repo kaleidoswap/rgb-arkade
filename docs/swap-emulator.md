@@ -1,6 +1,6 @@
 # Fixed-price RGB sale enforced by an Arkade-Script covenant (emulator)
 
-Branch `emulator-covenant` (off `swap-noninteractive` 9b6937c). Everything below was run on regtest
+Everything below was run on regtest
 in an isolated docker-in-docker stack (arkd `arkd:rgb-cponly` = arkd master f863e48 +
 `patches/arkd-checkpoint.patch`, emulator `emulator:rgb` = arkade-os/emulator 7b830f6 (v0.0.9) +
 `patches/emulator.patch`) on 2026-11-03, 11:43-12:40 CET, unless marked **unverified**.
@@ -58,7 +58,7 @@ in an isolated docker-in-docker stack (arkd `arkd:rgb-cponly` = arkd master f863
    * the signature, C1 and C2;
    * the covenant, H and V;
    * the T2 consignment (6,179 B) plus its Ark proof (2,746 B);
-   * `offer.json` (2,772 B). On branch `protobuf-proof` this is `offer.pb`, 1,815 B (`docs/protobuf.md`).
+   * `offer.json` (2,772 B). As protobuf it is `offer.pb`, 1,815 B (`docs/protobuf.md`).
 
    Then she goes offline. Building the offer takes 133 ms.
 

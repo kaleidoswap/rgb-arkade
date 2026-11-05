@@ -190,4 +190,4 @@ To change upstream code: edit `vendor/<repo>`, then `git -C vendor/<repo> diff >
 
 ## License
 
-MIT, see [LICENSE](LICENSE). The patched upstreams (arkd, rust-sdk, rgb-lib) are MIT as well.
+MIT, see [LICENSE](LICENSE). arkd, rust-sdk and rgb-lib, which this repository patches, are MIT as well. arkade-os/emulator and ArkLabsHQ/arkade-regtest have no explicit license; their patches here are small diffs against those public repositories.

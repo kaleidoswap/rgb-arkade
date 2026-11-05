@@ -1,7 +1,7 @@
 # Non-interactive RGB-for-BTC sale on Arkade
 
 Status: research note plus regtest probes (`demo/src/swap_ni.rs`: scenarios `swap-ni` and
-`swap-ni-grief <exit|burn|expire>`). Written 2026-11-02, follow-up 2026-11-03. Base: main 1174b54, with the `cponly` profile (arkd master f863e48 plus
+`swap-ni-grief <exit|burn|expire>`). Written 2026-11-02, follow-up 2026-11-03. With the `cponly` profile (arkd master f863e48 plus
 `patches/arkd-checkpoint.patch`) as the operator.
 
 **Goal.** A maker (seller) publishes an offer such as "400 units of asset X for 30,000 sat" and
@@ -113,7 +113,7 @@ Run `run-1793656630-swap-ni`, `SWAP-NI RESULT: PASS`.
 
 | step | result |
 |---|---|
-| offer build (maker) | 95 ms; offer.json 2,101 B (protobuf `offer.pb` since branch `protobuf-proof`: 1,381 B vs 1,938 B JSON for the same content, see `docs/protobuf.md`); offer consignment 6,179 B; offer Ark proof 512 B (V is a batch VTXO) |
+| offer build (maker) | 95 ms; offer.json 2,101 B (protobuf `offer.pb` now: 1,381 B vs 1,938 B JSON for the same content, see `docs/protobuf.md`); offer consignment 6,179 B; offer Ark proof 512 B (V is a batch VTXO) |
 | taker pre-check on the template (offline) | 400 units on template vout 2 |
 | 5a underpay maker by 1 sat | arkd: `INVALID_SIGNATURE (18): invalid signature in ark tx …` |
 | 5b redirect maker output to taker | arkd: `INVALID_SIGNATURE (18) …` |
@@ -145,8 +145,7 @@ on-chain) are unchanged by this construction and are out of scope here.
   abandons it.
 - `SubmitOffchainTx` re-builds the checkpoints and stores them signed by the **operator only**.
   User checkpoint signatures in the submitted PSBTs are dropped (`service.go` ~1120). They reach
-  arkd only through `FinalizeOffchainTx`, and the checkpoint tap tree is stored only then
-  (`service.go` ~1423).
+  arkd only through `FinalizeOffchainTx`.
 - On `SubmitTx`, the inputs become spent (`VTXO_ALREADY_SPENT` for any other spend). There is no
   timeout and no cancel RPC. `GetPendingTx` lets an input owner fetch the pending tx (the
   maker's client lists it).
@@ -164,9 +163,7 @@ on-chain) are unchanged by this construction and are out of scope here.
    - It unrolls V, broadcasts the checkpoint (V's collaborative leaf has no CSV, so it wins
      against the maker's exit leaf), waits `CHECKPOINT_EXIT_DELAY`, and spends CP:1 alone.
    - The maker loses V's sats, and the units T1 sent to CP:1 are burnt.
-   - This was not executed with a malicious operator. The honest sweeper *tries* exactly this
-     after a restart (below) and fails only for a missing cached tap tree, which the operator can
-     rebuild.
+   - This was not executed with a malicious operator.
 2. *Taker alone*: submit a valid fill and never finalize (G1). Then:
    - V stays locked (no timeout). The maker can neither cancel (G2) nor finalize (G3, the
      taker's checkpoint is unsigned).
@@ -228,7 +225,6 @@ taker presigns its checkpoint before submission.
 | exit: maker spends V's exit path (after the 10-block CSV), RGB commitment in that spend | tx `427f078b…1a00`; receiver Gina settles **1000** units (the whole V, T1 never took effect) |
 | burn: taker unrolls V (1 tx) and broadcasts the maker checkpoint (maker sig + operator sig) | accepted by bitcoind, confirmed; arkd `reactToFraud`: "failed to finalize checkpoint tx: missing signature for pubkey <maker>" |
 | burn: CP:1 (100,000 sat; T1's 400 units) after 48 blocks (`CHECKPOINT_EXIT_DELAY` = 10) | unspent: the honest arkd does not sweep it at runtime |
-| burn: arkd restarted | "sweeper: scheduling sweep of 1 checkpoints" → "failed to schedule sweep task for checkpoint 0d74f911…: no taproot tap tree found" (the tap tree is cached only at finalize) |
 | expire: nobody acts, mine past V's batch expiry | V `spent=true, swept=true`: the maker's V is lost with its batch |
 | expire: taker finalizes after the expiry | `INTERNAL_ERROR: failed to finalize offchain tx: not in a valid stage to finalize offchain tx` |
 
@@ -477,8 +473,7 @@ All times are CET, 2026-11-03. Every regression run uses the committed `patches/
 ## Unverified / open
 
 - **Operator-alone theft on B-public was shown in parts, not end to end.**
-  - Shown: the checkpoint can go on-chain with the published maker signature (`burn` mode), and
-    the honest sweeper then tries to sweep CP:1 after a restart.
+  - Shown: the checkpoint can go on-chain with the published maker signature (`burn` mode).
   - Not shown: an operator actually spending CP:1, which would need a modified operator or its
     key.
   - The claim also rests on the checkpoint script tree in `buildCheckpointTx`.

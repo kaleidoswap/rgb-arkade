@@ -1,6 +1,6 @@
 # What the Arkade emulator can enforce for RGB assets
 
-Status: exploration on branch `emu-explore`. Stack: arkd cponly (master f863e48 + checkpoint
+Status: exploration. Stack: arkd cponly (master f863e48 + checkpoint
 OP_RETURN patch), emulator:rgb (v0.0.9 7b830f6 + patches/emulator.patch, with the durable
 finalize). Trust assumption accepted for this exploration: **the operator and the emulator are
 trusted to run the covenant** (an operator that co-signs without the emulator, or an emulator that

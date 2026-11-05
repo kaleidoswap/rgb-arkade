@@ -138,7 +138,7 @@ Cold verification: fresh wallet, with arkd paused. It includes importing the pro
 |---|---|---|
 | Compact binary proof: only the data the verifier reads, then converted back and verified by the same code | 40.4 kB (16 hops) | 15.2 kB (−62%) |
 | Binary proof plus gzip | 40.4 kB | 9.3 kB (−77%) |
-| Protobuf proof (the format in use since branch `protobuf-proof`: full PSBTs as raw bytes, no base64/JSON), 2026-11-03 run | 40.2 kB (gzip 16.3) | 29.6 kB (−26%), gzip 11.0 kB (−33%); see `docs/protobuf.md` |
+| Protobuf proof (the format now in use: full PSBTs as raw bytes, no base64/JSON), 2026-11-03 run | 40.2 kB (gzip 16.3) | 29.6 kB (−26%), gzip 11.0 kB (−33%); see `docs/protobuf.md` |
 | gzip of the consignment | 21.7 kB | 11.1 kB (−49%) |
 | Receiver cache: only the transactions it has not already verified are sent | 15.2 kB cumulative | about 1 kB per new hop |
 | Already-mined transactions removed from the proof (already in the offline-proof work) | – | 39 bytes if everything is mined (never the case for forfeits, nor for checkpoint-only transfers and renewals) |
@@ -309,12 +309,12 @@ Smoke `delegate-renewal 12` (run-1793616742): **PASS**.
 Long run `delegate-renewal 60` (run-1793621378, 2 Nov 13:09–15:44, 9279 s, no clock gaps): **PASS**, on a stack rebuilt after the box was re-provisioned (same arkd commit + B, binary rebuilt; images `arkd:rgb-delegate-cponly` / `arkd:rgb-delegate-full`, tagged `arkd:rgb-cponly` / `arkd:rgb` only inside the dind daemon).
 
 - Negatives N1–N4: same results as the smoke run (N3 accepted by arkd, Mallory `Ok(1000)`, policy 1 violation).
-- Olivia: 18 renewals over 62.8 simulated days, 3–14 s each. Proof 4642 → 35667 B (gz 2469 → 12665, 5 → 39 PSBTs), +1825 B per renewal throughout; consignment 5585 → 14561 B (+528). Import 19 → 85 ms, validate 251 → 378 ms, policy 16 → 393 ms. 11 failed attempts in total: 10 `FORFEIT_CLOSURE_LOCKED` (block time behind T, retried after 10–20 s) and 1 metrics-check `Stock error` after renewal 10 had completed (transient indexer lookup; fixed in `91a0d9a`).
+- Olivia: 18 renewals over 62.8 simulated days, 3–14 s each. Proof 4642 → 35667 B (gz 2469 → 12665, 5 → 39 PSBTs), +1825 B per renewal throughout; consignment 5585 → 14561 B (+528). Import 19 → 85 ms, validate 251 → 378 ms, policy 16 → 393 ms. 11 failed attempts in total: 10 `FORFEIT_CLOSURE_LOCKED` (block time behind T, retried after 10–20 s) and 1 metrics-check `Stock error` after renewal 10 had completed (transient indexer lookup, since retried).
 - Olivia's return (day 62.9): discovery 160 addresses, found the handoff VTXO with 6.8 days left; policy 19 witnesses / 18 delegate spends / 0 violations; validate+accept 518 ms. To Bob: plain RGB "Invalid consignment"; with proof received 1000 (proof 37508 B / 13462 gz, 40 PSBTs; consignment 15089 B; import 79 ms, validate+accept 393 ms).
 - Rita: operator refusal at 13:20; 26 refused attempts; both towers broadcast at 13:34 (554 sat at 2 sat/vB); guard refused re-board; CSV spend to Gina, Gina settled 1000 (one import retry).
 - Extrapolation: 60 real days at 7-day expiry and renewal at half life = 18 renewals, about 35.7 kB proof (12.7 kB gz); one year about 194 kB (65 kB gz). Why it is linear and how to compact it: [delegate-renewal.md](delegate-renewal.md#why-proof-growth-is-linear-and-what-60-real-days-costs).
 
-Regressions on the same rebuilt isolated stack after the long run (2 Nov 2026, commit `91a0d9a` code):
+Regressions on the same rebuilt isolated stack after the long run (2 Nov 2026):
 
 | `scripts/run-all.sh` mode | Stack | Scenarios | Result |
 |---|---|---|---|
