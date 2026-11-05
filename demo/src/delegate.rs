@@ -709,11 +709,5 @@ pub(crate) fn policy_check(regtest: &Regtest, consignment: &Path, proof: &Path, 
 }
 
 pub(crate) fn gz_len(p: &Path) -> u64 {
-    std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!("gzip -9 -c '{}' | wc -c", p.display()))
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
-        .unwrap_or(0)
+    std::fs::read(p).map(|b| crate::wire::gz_len(&b)).unwrap_or(0)
 }

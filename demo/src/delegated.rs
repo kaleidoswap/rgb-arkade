@@ -114,6 +114,7 @@ pub(crate) fn out_dir(dir: &Path, id: &str) -> PathBuf {
 }
 
 pub(crate) fn load_job(dir: &Path, id: &str) -> anyhow::Result<Job> {
+    ensure!(id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'), "bad job id");
     Ok(serde_json::from_str(&std::fs::read_to_string(job_path(dir, id))?)?)
 }
 
