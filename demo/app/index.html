@@ -447,7 +447,8 @@ function evHtml(g) {
 
 // ---------------------------------------------------------------- wallets
 const tickerOf = id => {
-  const all = new Map(); (st.wallets || []).forEach(w => (w.assets || []).forEach(a => all.set(a.asset_id, a.ticker || 'ASSET')));
+  // a wallet that only holds the asset through Arkade lists it without a ticker: keep the issuer's
+  const all = new Map(); (st.wallets || []).forEach(w => (w.assets || []).forEach(a => { if (a.ticker || !all.has(a.asset_id)) all.set(a.asset_id, a.ticker || 'ASSET'); }));
   const t = all.get(id) || 'ASSET', twins = [...all.values()].filter(x => x === t).length;
   return twins > 1 ? `${t}·${id.replace(/^rgb:/, '').slice(0, 4)}` : t;
 };
