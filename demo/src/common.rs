@@ -46,7 +46,7 @@ pub(crate) async fn ark_client(name: &str, regtest: Arc<Regtest>, state: &Path) 
     std::fs::write(state.join(format!("{name}-ark-seed.hex")), hex::encode(seed))?;
     std::fs::write(state.join(format!("{name}-onchain-sk.hex")), hex::encode(sk_bytes))?;
     let kp = Keypair::from_secret_key(&secp, &SecretKey::from_slice(&sk_bytes)?);
-    let wallet = Arc::new(ArkBdkWallet::new(kp, Network::Regtest, "http://localhost:3000/api")?);
+    let wallet = Arc::new(ArkBdkWallet::new(kp, Network::Regtest, &crate::regtest::esplora_url())?);
     let xpriv = Xpriv::new_master(Network::Regtest, &seed)?;
     let client = OfflineClient::with_bip32(
         OfflineClientConfig {
@@ -72,7 +72,7 @@ pub(crate) async fn ark_client_load(name: &str, regtest: Arc<Regtest>, state: &P
     let seed = hex::decode(std::fs::read_to_string(state.join(format!("{name}-ark-seed.hex")))?.trim())?;
     let sk_bytes = hex::decode(std::fs::read_to_string(state.join(format!("{name}-onchain-sk.hex")))?.trim())?;
     let kp = Keypair::from_secret_key(&secp, &SecretKey::from_slice(&sk_bytes)?);
-    let wallet = Arc::new(ArkBdkWallet::new(kp, Network::Regtest, "http://localhost:3000/api")?);
+    let wallet = Arc::new(ArkBdkWallet::new(kp, Network::Regtest, &crate::regtest::esplora_url())?);
     let xpriv = Xpriv::new_master(Network::Regtest, &seed)?;
     let client = OfflineClient::with_bip32(
         OfflineClientConfig {

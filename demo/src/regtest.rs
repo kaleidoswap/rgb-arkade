@@ -8,6 +8,11 @@ use bitcoin::{Address, Amount, OutPoint, Transaction, Txid};
 use std::process::Command;
 
 
+/// The regtest Esplora REST base: `$RGB_ARKADE_ESPLORA`, else the mempool container's default port.
+pub fn esplora_url() -> String {
+    std::env::var("RGB_ARKADE_ESPLORA").unwrap_or_else(|_| "http://localhost:3000/api".into())
+}
+
 pub struct Regtest {
     esplora: esplora_client::BlockingClient,
     rpc_url: String,
@@ -16,7 +21,7 @@ pub struct Regtest {
 impl Regtest {
     pub fn new() -> Self {
         Self {
-            esplora: esplora_client::Builder::new("http://localhost:3000/api").build_blocking(),
+            esplora: esplora_client::Builder::new(&esplora_url()).build_blocking(),
             rpc_url: "http://localhost:18443".to_string(),
         }
     }
